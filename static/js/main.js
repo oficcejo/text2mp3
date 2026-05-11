@@ -5,6 +5,8 @@
 let currentEventSource = null;
 let timerInterval = null;
 let startTime = null;
+let currentVideoJobId = null;
+let currentVideoPollTimer = null;
 
 // ============================================================
 // 初始化
@@ -14,6 +16,8 @@ document.addEventListener('DOMContentLoaded', function() {
     setupCharCounters();
     loadHistory();
     loadClonedVoicesList();
+    updateVideoVoiceList();
+    loadVideoConfig();
     setupTabSwitching();
     setupModelSelector();
     setupFileUpload();
@@ -81,6 +85,7 @@ function setupCharCounters() {
 
     updateCounter('textInput', 'charCount', null);
     updateCounter('cloneTextInput', 'cloneCharCount', 'cloneTokenEst');
+    updateCounter('videoTextInput', 'videoCharCount', null);
 }
 
 // ============================================================
@@ -186,6 +191,56 @@ async function updateVoiceList(model) {
     } catch(e) {
         console.error('获取音色列表失败:', e);
     }
+}
+
+
+async function updateVideoVoiceList() {
+    const select = document.getElementById('videoVoiceSelect');
+    if (!select) return;
+
+    const currentValue = select.value;
+    const builtinVoices = {
+        mimo_default: 'MiMo 默认音色',
+        Mia: 'Mia（英语女声）',
+        Chloe: 'Chloe（英语女声）',
+        Milo: 'Milo（英语男声）',
+        Dean: 'Dean（英语男声）',
+    };
+
+    select.innerHTML = '';
+
+    try {
+        const resp = await fetch('/api/cloned-voices');
+        const data = await resp.json();
+        const clonedVoices = data.voices || [];
+
+        if (clonedVoices.length > 0) {
+            const cloneGroup = document.createElement('optgroup');
+            cloneGroup.label = '已克隆音色';
+            for (const cv of clonedVoices) {
+                const opt = document.createElement('option');
+                opt.value = 'cloned:' + cv.id;
+                opt.textContent = cv.name + (cv.original_filename ? ' (' + cv.original_filename + ')' : '');
+                cloneGroup.appendChild(opt);
+            }
+            select.appendChild(cloneGroup);
+        }
+    } catch (e) {
+        console.error('加载视频音色失败:', e);
+    }
+
+    const builtinGroup = document.createElement('optgroup');
+    builtinGroup.label = '内置音色';
+    for (const [id, name] of Object.entries(builtinVoices)) {
+        const opt = document.createElement('option');
+        opt.value = id;
+        opt.textContent = name;
+        builtinGroup.appendChild(opt);
+    }
+    select.appendChild(builtinGroup);
+
+    const matched = Array.from(select.options).some(opt => opt.value === currentValue);
+    select.value = matched ? currentValue : 'mimo_default';
 }
 
 // ============================================================
@@ -658,6 +713,215 @@ function cancelCloneSynthesis() {
 }
 
 // ============================================================
+// 文生视频
+// ============================================================
+
+async function loadVideoConfig() {
+    const openaiStatus = document.getElementById('videoOpenAIStatus');
+    const ffmpegStatus = document.getElementById('videoFfmpegStatus');
+    if (!openaiStatus || !ffmpegStatus) return;
+
+    try {
+        const resp = await fetch('/api/video/config');
+        const data = await resp.json();
+
+        openaiStatus.textContent = data.openai_configured ? '图像接口：已配置' : '图像接口：未配置';
+        openaiStatus.className = 'status-chip ' + (data.openai_configured ? 'success' : 'warn');
+
+        ffmpegStatus.textContent = data.ffmpeg_available ? 'FFmpeg：可生成 MP4' : 'FFmpeg：未检测到，将只保留分镜产物';
+        ffmpegStatus.className = 'status-chip ' + (data.ffmpeg_available ? 'success' : 'warn');
+    } catch (e) {
+        openaiStatus.textContent = '图像接口：检查失败';
+        ffmpegStatus.textContent = 'FFmpeg：检查失败';
+        openaiStatus.className = 'status-chip warn';
+        ffmpegStatus.className = 'status-chip warn';
+    }
+}
+
+async function createVideoJob() {
+    const text = document.getElementById('videoTextInput').value.trim();
+    const voice = document.getElementById('videoVoiceSelect').value;
+    const style = document.getElementById('videoStyleSelect').value;
+    const btn = document.getElementById('videoGenerateBtn');
+
+    if (!text) {
+        showToast('请输入文章内容', 'error');
+        return;
+    }
+
+    btn.disabled = true;
+    btn.innerHTML = '正在创建任务...';
+
+    try {
+        const resp = await fetch('/api/video/jobs', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ text, voice, style, aspect_ratio: '16:9' }),
+        });
+        const data = await resp.json();
+        if (!resp.ok) {
+            throw new Error(data.error || '创建任务失败');
+        }
+
+        currentVideoJobId = data.job.job_id;
+        document.getElementById('videoJobCard').classList.remove('hidden');
+        document.getElementById('storyboardCard').classList.remove('hidden');
+        document.getElementById('videoPlayerCard').classList.remove('hidden');
+        renderVideoJob(data.job);
+        startVideoPolling(currentVideoJobId);
+        showToast('视频任务已创建', 'success');
+    } catch (e) {
+        showToast(e.message || '创建任务失败', 'error');
+    } finally {
+        btn.disabled = false;
+        btn.innerHTML = `
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="5 3 19 12 5 21 5 3"/></svg>
+            开始生成视频
+        `;
+    }
+}
+
+function startVideoPolling(jobId) {
+    stopVideoPolling();
+    currentVideoPollTimer = setInterval(async () => {
+        try {
+            const resp = await fetch(`/api/video/jobs/${jobId}`);
+            const data = await resp.json();
+            if (!resp.ok) {
+                throw new Error(data.error || '读取任务失败');
+            }
+            renderVideoJob(data.job);
+            if (['completed', 'failed', 'cancelled'].includes(data.job.status)) {
+                stopVideoPolling();
+            }
+        } catch (e) {
+            stopVideoPolling();
+            showToast('任务轮询失败', 'error');
+        }
+    }, 2500);
+}
+
+function stopVideoPolling() {
+    if (currentVideoPollTimer) {
+        clearInterval(currentVideoPollTimer);
+        currentVideoPollTimer = null;
+    }
+}
+
+function renderVideoJob(job) {
+    const fill = document.getElementById('videoJobProgressFill');
+    const statusText = document.getElementById('videoJobStatusText');
+    const progressText = document.getElementById('videoJobProgressText');
+    const warnings = document.getElementById('videoWarnings');
+    const resultActions = document.getElementById('videoResultActions');
+    const downloadBtn = document.getElementById('videoDownloadBtn');
+    const subtitleBtn = document.getElementById('videoSubtitleBtn');
+    const videoPlayer = document.getElementById('videoPlayer');
+    const previewHint = document.getElementById('videoPreviewHint');
+    const storyboardGrid = document.getElementById('storyboardGrid');
+
+    fill.style.width = (job.progress || 0) + '%';
+    statusText.textContent = mapVideoJobStatus(job.status, job.error);
+    progressText.textContent = (job.progress || 0) + '%';
+
+    if (job.warnings && job.warnings.length) {
+        warnings.classList.remove('hidden');
+        warnings.innerHTML = job.warnings.map(w => `<div class="video-warning-item">${escapeHtml(w)}</div>`).join('');
+    } else {
+        warnings.classList.add('hidden');
+        warnings.innerHTML = '';
+    }
+
+    if (job.video_url || job.subtitle_url) {
+        resultActions.classList.remove('hidden');
+    } else {
+        resultActions.classList.add('hidden');
+    }
+
+    if (job.video_url) {
+        downloadBtn.classList.remove('hidden');
+        downloadBtn.href = job.video_url;
+        videoPlayer.src = job.video_url;
+        previewHint.classList.add('hidden');
+    } else {
+        downloadBtn.classList.add('hidden');
+        videoPlayer.removeAttribute('src');
+        videoPlayer.load();
+        if (job.preview_available) {
+            previewHint.classList.remove('hidden');
+        }
+    }
+
+    if (job.subtitle_url) {
+        subtitleBtn.classList.remove('hidden');
+        subtitleBtn.href = job.subtitle_url;
+    } else {
+        subtitleBtn.classList.add('hidden');
+    }
+
+    const scenes = job.scenes || [];
+    const groups = [];
+    for (const scene of scenes) {
+        const groupKey = scene.image_group_index || scene.scene_index;
+        let group = groups.find(item => item.key === groupKey);
+        if (!group) {
+            group = {
+                key: groupKey,
+                image_url: scene.image_url || scene.frame_url,
+                scenes: [],
+            };
+            groups.push(group);
+        }
+        if (!group.image_url && (scene.image_url || scene.frame_url)) {
+            group.image_url = scene.image_url || scene.frame_url;
+        }
+        group.scenes.push(scene);
+    }
+
+    storyboardGrid.innerHTML = groups.map(group => `
+        <div class="storyboard-group-card">
+            <div class="storyboard-group-image">
+                ${group.image_url ? `<img src="${group.image_url}" alt="漫画组 ${group.key}">` : ''}
+                <div class="storyboard-group-badge">组 ${group.key}</div>
+            </div>
+            <div class="storyboard-group-body">
+                ${group.scenes.map(scene => `
+                    <div class="storyboard-scene-item">
+                        <div class="storyboard-scene-head">
+                            <span class="storyboard-scene-title">${escapeHtml(scene.title || `分镜 ${scene.scene_index}`)}</span>
+                            <span class="storyboard-scene-meta">${scene.actual_duration_sec ? `${scene.actual_duration_sec}s` : ''}</span>
+                        </div>
+                        <div class="storyboard-scene-text">${escapeHtml(scene.subtitle_text || scene.narration_text || '')}</div>
+                    </div>
+                `).join('')}
+            </div>
+        </div>
+    `).join('');
+
+    if (job.status === 'completed') {
+        showToast(job.video_url ? '视频生成完成' : '分镜产物已生成', 'success');
+    }
+    if (job.status === 'failed' && job.error) {
+        showToast(job.error, 'error');
+    }
+}
+
+function mapVideoJobStatus(status, error) {
+    const labels = {
+        pending: '等待任务启动',
+        planning: '正在生成分镜',
+        generating_assets: '正在生成画面和配音',
+        building_subtitles: '正在生成字幕',
+        rendering_video: '正在合成视频',
+        completed: '处理完成',
+        failed: '处理失败',
+        cancelled: '已取消',
+    };
+    if (status === 'failed' && error) return `处理失败：${error}`;
+    return labels[status] || status || '处理中';
+}
+
+// ============================================================
 // 历史记录
 // ============================================================
 async function loadHistory() {
@@ -754,6 +1018,7 @@ async function loadClonedVoicesList() {
             if (empty) empty.style.display = '';
             // Remove any existing items
             list.querySelectorAll('.cloned-voice-item').forEach(el => el.remove());
+            updateVideoVoiceList();
             return;
         }
 
@@ -780,6 +1045,7 @@ async function loadClonedVoicesList() {
             `;
             list.appendChild(item);
         }
+        updateVideoVoiceList();
     } catch(e) {
         console.error('加载克隆音色失败:', e);
     }

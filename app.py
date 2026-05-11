@@ -22,6 +22,7 @@ from flask import (
     send_file, session, Response, stream_with_context
 )
 from dotenv import load_dotenv
+from video_mvp import register_video_mvp_routes
 
 load_dotenv()
 
@@ -455,6 +456,13 @@ def convert_to_mp3(wav_bytes: bytes) -> bytes:
     buf = io.BytesIO()
     audio.export(buf, format="mp3", bitrate="192k")
     return buf.getvalue()
+
+
+register_video_mvp_routes(app, {
+    "output_dir": OUTPUT_DIR,
+    "get_cloned_voice_sample": get_cloned_voice_sample,
+    "call_mimo_tts": call_mimo_tts,
+})
 
 
 # ============================================================

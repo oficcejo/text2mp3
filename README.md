@@ -1,74 +1,180 @@
-# MiMo TTS Web
+# MiMo TTS / 文生视频工具
 
-一个基于 Flask 的小米 MiMo TTS Web 工具，提供文本转语音、音色设计、音色克隆、历史记录和克隆音色管理能力。
+一个基于 Flask 的本地 Web 工具，当前支持两类能力：
 
-项目当前是单文件后端 `app.py` + 原生前端页面，适合本地自用、内网部署或作为 MiMo TTS 的轻量封装。
+- MiMo TTS 文本转语音
+- 文章转漫画视频 MVP
 
-## 功能概览
+项目适合本地使用、内网部署，或者作为你自己的 TTS / 文生视频工作台继续扩展。
 
-- 文本转语音
-  - 支持 `mimo-v2.5-tts`
-  - 支持 `mimo-v2-tts`
-- 音色设计
-  - 支持 `mimo-v2.5-tts-voicedesign`
-  - 通过文字描述生成音色
-- 音色克隆
-  - 支持上传 `MP3/WAV` 样本
-  - 自动保存克隆音色，后续可复用
-- 长文本处理
-  - 普通 TTS 默认按 `4500` 字符分段
-  - 音色克隆模式默认按 `3000` 字符分段
-  - 分段结果自动拼接，段间插入 `0.3s` 静音
-- 历史记录
-  - 默认保留最近 `50` 条
-  - 支持删除历史及对应音频文件
-- 实时进度
-  - 通过 SSE 风格流式响应回传准备、连接、生成、处理、完成等阶段
-- 诊断接口
-  - 检查 API Key、DNS、TCP 连接和模型接口可达性
+## 功能说明
 
-## 技术栈
+### 1. 语音合成
 
-- 后端：Flask
-- 前端：HTML + CSS + 原生 JavaScript
-- HTTP：requests
-- 音频处理：numpy、soundfile、pydub
-- 配置：python-dotenv
-- 部署：Gunicorn + Docker / Docker Compose
+支持以下模型：
 
-## 目录结构
+- `mimo-v2.5-tts`
+- `mimo-v2.5-tts-voicedesign`
+- `mimo-v2.5-tts-voiceclone`
+- `mimo-v2-tts`
+
+支持能力：
+
+- 内置音色选择
+- VoiceDesign 文字定义音色
+- VoiceClone 音频样本克隆音色
+- 风格指令
+- 唱歌模式
+- `mp3 / wav` 输出
+- 长文本自动分段合成
+- 合成历史记录
+
+### 2. 克隆音色管理
+
+支持上传 `mp3 / wav` 样本做克隆音色，并保存到本地。
+
+支持：
+
+- 克隆音色保存
+- 在语音合成中复用克隆音色
+- 在文生视频中复用克隆音色
+- 删除已保存克隆音色
+
+### 3. 文生视频 MVP
+
+输入文章后，系统会：
+
+1. 拆分分镜
+2. 生成漫画图
+3. 生成配音
+4. 生成字幕
+5. 合成视频
+
+当前实现是“静态漫画视频”路线，不是动画视频。
+
+#### 当前文生视频策略
+
+- 分镜时长默认更细：
+  - `SCENE_TARGET_SECONDS_MIN=12`
+  - `SCENE_TARGET_SECONDS_MAX=18`
+- 漫画图按“漫画组”复用：
+  - 默认每 `2-3 分钟` 内容共用一张漫画图
+  - 每组至少 `10` 个分镜
+  - 每组生成一张“多格漫画”
+  - 组内各 scene 分别保留自己的字幕、配音和时长
+
+这套策略的目标是节约生图成本，而不是每个 scene 都单独生图。
+
+#### 当前兜底行为
+
+为了保证流程能跑通，当前代码带有兜底逻辑：
+
+- OpenAI 兼容生图接口未配置时：
+  - 生成占位漫画图
+- MiMo API 不可用时：
+  - 生成静音 WAV，保持字幕和视频链路可继续执行
+- 系统未检测到 `ffmpeg` 时：
+  - 保留分镜图、音频、字幕，不输出最终 `mp4`
+
+## 项目结构
 
 ```text
 .
-├── app.py                  # Flask 服务入口与全部后端逻辑
-├── requirements.txt        # Python 依赖
-├── Dockerfile              # 容器镜像构建
-├── docker-compose.yml      # 容器编排
+├── app.py
+├── video_mvp.py
+├── requirements.txt
+├── .env.example
+├── Dockerfile
+├── docker-compose.yml
 ├── templates/
-│   └── index.html          # 页面模板
+│   └── index.html
 ├── static/
-│   ├── css/style.css       # 样式
-│   └── js/main.js          # 前端交互逻辑
-├── output/                 # 生成音频输出目录
-├── cloned_voices/          # 克隆音色样本及索引
-└── history.json            # 历史记录
+│   ├── css/style.css
+│   └── js/main.js
+├── output/
+├── cloned_voices/
+├── jobs/
+└── history.json
 ```
 
-## 运行前准备
+### 关键目录说明
 
-### 1. 申请 MiMo API Key
+- `output/`
+  - TTS 输出音频
+- `cloned_voices/`
+  - 克隆音色样本与索引
+- `jobs/`
+  - 文生视频任务目录
+- `history.json`
+  - 语音合成历史
 
-在小米 MiMo 平台创建 API Key，然后写入 `.env`：
+### 文生视频任务目录
+
+```text
+jobs/job_xxx/
+├── manifest.json
+├── storyboard.json
+├── images/
+├── frames/
+├── audio/
+├── subtitles/
+├── video/
+└── video_parts/
+```
+
+## 环境变量
+
+参考 `.env.example`。
+
+### MiMo TTS
 
 ```env
-MIMO_API_KEY=你的API密钥
+MIMO_API_KEY=
 ```
 
-可直接复制 `.env.example` 为 `.env` 后再修改。
+### OpenAI 兼容文本 / 生图接口
 
-### 2. Python 依赖
+可对接官方 OpenAI，也可对接第三方中转。
 
-推荐 Python `3.11`。
+```env
+OPENAI_API_KEY=
+OPENAI_BASE_URL=
+OPENAI_TEXT_MODEL=gpt-4.1
+OPENAI_IMAGE_MODEL=gpt-image-2
+OPENAI_IMAGE_SIZE=1024x1024
+OPENAI_IMAGE_QUALITY=medium
+OPENAI_TEXT_TIMEOUT=180
+```
+
+### 文生视频参数
+
+```env
+JOBS_DIR=jobs
+VIDEO_DEFAULT_VOICE=mimo_default
+SCENE_TARGET_SECONDS_MIN=12
+SCENE_TARGET_SECONDS_MAX=18
+SCENE_MAX_COUNT=24
+SCENE_STYLE=comic
+VIDEO_ASPECT_RATIO=16:9
+VIDEO_WIDTH=1280
+VIDEO_HEIGHT=720
+VIDEO_FPS=24
+IMAGE_GROUP_SECONDS_MIN=120
+IMAGE_GROUP_SECONDS_MAX=180
+IMAGE_GROUP_MIN_SCENES=10
+FFMPEG_BIN=
+```
+
+## 部署说明
+
+## 一、本地开发部署
+
+### 1. Python 环境
+
+建议：
+
+- Python `3.11`
+- Windows / Linux 都可
 
 安装依赖：
 
@@ -76,17 +182,42 @@ MIMO_API_KEY=你的API密钥
 pip install -r requirements.txt
 ```
 
-### 3. 系统音频依赖
+### 2. 配置 `.env`
 
-项目使用 `pydub` 处理音频：
+复制：
 
-- 上传 `MP3` 样本时，通常需要系统可用的 `ffmpeg`
-- 导出 `MP3` 时，也通常依赖 `ffmpeg`
-- `soundfile` 运行时需要 `libsndfile`
+```bash
+cp .env.example .env
+```
 
-如果你只使用 `WAV` 输入和输出，外部依赖会少一些；如果要稳定支持 `MP3`，建议明确安装 `ffmpeg`。
+然后填写至少以下内容：
 
-## 本地启动
+- `MIMO_API_KEY`
+- `OPENAI_API_KEY`（如果要真实生图）
+- `OPENAI_BASE_URL`（如果你使用第三方中转）
+
+### 3. 安装 ffmpeg
+
+文生视频最终输出 `mp4` 依赖 `ffmpeg`。
+
+如果系统里没有 `ffmpeg`：
+
+- 页面仍可创建视频任务
+- 仍可生成分镜、字幕、音频
+- 但不会产出最终视频文件
+
+Windows 下建议：
+
+- 把 `ffmpeg.exe` 加入 PATH
+- 或者在 `.env` 中设置：
+
+```env
+FFMPEG_BIN=C:\path\to\ffmpeg.exe
+```
+
+### 4. 启动服务
+
+开发启动：
 
 ```bash
 python app.py
@@ -98,180 +229,183 @@ python app.py
 http://127.0.0.1:5000
 ```
 
-开发模式下，服务会：
+如果你在当前项目里用的是虚拟环境：
 
-- 自动创建 `output/`
-- 自动创建 `cloned_voices/`
-- 读取 `.env` 中的 `MIMO_API_KEY`
+```powershell
+.\venv\Scripts\python.exe app.py
+```
 
-## Docker 启动
+如果你发现后台调试启动不稳定，可以直接用：
 
-### 方式一：直接构建运行
+```powershell
+.\venv\Scripts\python.exe -c "from app import app; app.run(host='127.0.0.1', port=5000, debug=False)"
+```
+
+## 二、生产部署建议
+
+当前项目是 Flask 单体应用，推荐这样部署：
+
+- Gunicorn / Waitress 作为 WSGI 服务
+- Nginx / Caddy 做反向代理
+- `ffmpeg` 作为系统依赖安装
+
+如果要长期对外提供文生视频能力，建议至少补这些内容：
+
+- 任务队列
+- 鉴权
+- 失败重试
+- 持久化数据库
+- 对 `jobs/` 做清理策略
+
+## 三、Docker 部署说明
+
+项目当前已经带了：
+
+- `Dockerfile`
+- `docker-compose.yml`
+
+但要注意：
+
+1. 现有 Docker 配置更偏向原始 TTS 功能
+2. 如果你要完整使用文生视频：
+   - 需要容器里有 `ffmpeg`
+   - 需要确保 OpenAI / MiMo 网络可访问
+
+### 构建
 
 ```bash
 docker build -t text2mp3 .
+```
+
+### 运行
+
+```bash
 docker run --rm -p 5000:5000 --env-file .env text2mp3
 ```
 
-### 方式二：Docker Compose
+### Compose
 
 ```bash
 docker compose up --build
 ```
 
-`docker-compose.yml` 已挂载以下目录和文件用于持久化：
-
-- `./output -> /app/output`
-- `./cloned_voices -> /app/cloned_voices`
-- `./history.json -> /app/history.json`
-
 ### Docker 注意事项
 
-当前 `Dockerfile` 安装了 `libsndfile1`，但没有安装 `ffmpeg`。这意味着：
+当前 README 必须说明这件事：
 
-- `WAV` 路径通常更稳妥
-- `MP3` 上传或 `MP3` 导出在某些环境里可能不可用
+- 如果镜像里没有 `ffmpeg`
+- 文生视频最终 MP4 输出就不会完整可用
 
-如果容器内需要完整 `MP3` 能力，建议补充安装 `ffmpeg`。
+所以如果你准备在 Docker 里跑文生视频，建议自行补 `ffmpeg` 到镜像。
 
-## 页面功能说明
+## 页面说明
 
-### 语音合成
+当前页面包含：
 
-支持选择以下模型：
+- 语音合成
+- 文生视频
+- 声音克隆
+- 历史记录
 
-- `mimo-v2.5-tts`
-- `mimo-v2.5-tts-voicedesign`
-- `mimo-v2.5-tts-voiceclone`
-- `mimo-v2-tts`
+### 文生视频页
 
-支持的主要参数：
+支持：
 
-- 文本内容
-- 音色
-- 风格指令
-- 输出格式：`mp3` / `wav`
-- 唱歌模式：仅普通 TTS 模型可用
+- 输入文章
+- 选择配音音色
+  - 包括内置音色
+  - 包括克隆音色
+- 选择画面风格
+- 查看任务进度
+- 查看按“漫画组”展示的预览
+- 下载字幕
+- 下载最终视频
 
-其中：
+## 文生视频预览说明
 
-- `VoiceDesign` 模式要求填写音色描述
-- `VoiceClone` 模式可直接上传样本生成，也可复用已保存的克隆音色
+当前“分镜预览”已经不是逐 scene 平铺，而是按“漫画组”展示：
 
-### 音色克隆
+- 每组只展示一张组图
+- 组内列出多个分镜条目
+- 更符合“同一张多格漫画复用 2-3 分钟内容”的策略
 
-上传音频样本后，后端会先做预处理：
+## 接口概览
 
-- 最长截取 `10s`
-- 统一转为 `16kHz`、单声道、16-bit PCM WAV
-
-随后：
-
-- 调用 `mimo-v2.5-tts-voiceclone`
-- 保存样本到 `cloned_voices/<voice_id>/sample.wav`
-- 保存元信息到 `cloned_voices/<voice_id>/info.json`
-- 更新 `cloned_voices/index.json`
-
-### 历史记录
-
-历史记录保存在 `history.json`，每条记录包含：
-
-- 任务 ID
-- 模型名
-- 文本摘要
-- 音色
-- 风格摘要
-- 输出文件地址
-- 输出格式
-- 创建时间
-
-删除历史时，会同时尝试删除对应的 `mp3/wav` 文件。
-
-## 数据说明
-
-### `output/`
-
-保存生成后的最终音频文件，文件名示例：
-
-- `tts_xxxxxxxx.mp3`
-- `tts_xxxxxxxx.wav`
-- `clone_xxxxxxxx.mp3`
-
-### `cloned_voices/`
-
-每个克隆音色单独一个目录，例如：
-
-```text
-cloned_voices/
-└── cv_ab12cd34/
-    ├── info.json
-    └── sample.wav
-```
-
-### `history.json`
-
-历史记录文件，最多保留最近 `50` 条。
-
-## API 概览
-
-### 页面与文件
+### 原有 TTS
 
 - `GET /`
-  - 首页
-- `GET /output/<filename>`
-  - 下载或播放生成音频
-
-### 合成相关
-
 - `POST /api/tts/progress`
-  - 带进度的合成接口
-  - 前端主要使用这个接口
 - `POST /api/tts`
-  - 不带进度的兼容接口
 - `POST /api/tts/voiceclone`
-  - 表单上传版音色克隆接口
-
-### 配置与查询
-
-- `GET /api/config`
-  - 返回模型配置与 API Key 是否已配置
-- `GET /api/voices?model=...`
-  - 获取模型内置音色
 - `GET /api/cloned-voices`
-  - 获取已保存克隆音色列表
-- `GET /api/history`
-  - 获取历史记录
-- `GET /api/diagnose`
-  - 检查网络和 MiMo API 连通性
-
-### 删除接口
-
 - `DELETE /api/cloned-voices/<voice_id>`
+- `GET /api/history`
 - `DELETE /api/history/<history_id>`
+- `GET /api/voices`
+- `GET /api/config`
+- `GET /api/diagnose`
 
-## 已知实现特征
+### 文生视频
 
-- 后端核心逻辑集中在 `app.py`，目前没有拆模块
-- 进度接口本质上是 HTTP 流式输出，前端用 `XMLHttpRequest` 持续读取
-- 长文本时会逐段调用 MiMo，再在本地拼接
-- 历史和克隆音色信息都保存在本地文件中，不依赖数据库
+- `GET /api/video/config`
+- `GET /api/video/jobs`
+- `POST /api/video/jobs`
+- `GET /api/video/jobs/<job_id>`
+- `GET /api/video/jobs/<job_id>/storyboard`
+- `GET /video-jobs/<job_id>/<path:filename>`
 
-## 适合后续优化的点
+## 已知限制
 
-- 将 `app.py` 拆分为路由、服务、存储模块
-- 为 Docker 镜像补齐 `ffmpeg`
-- 为接口补测试
-- 增加鉴权与访问控制
-- 增加任务队列，避免长任务阻塞
-- 为历史记录与音色管理引入数据库
+- 当前视频链路仍是 MVP
+- 漫画图是静态图，不是动画
+- 角色一致性主要依赖 prompt，未做角色锁定系统
+- Docker 默认配置还不算完整的视频生产环境
+- 当前项目仍偏单体结构，后续最好把 `video_mvp.py` 再拆分
 
-## 快速检查清单
+## 常见问题
 
-启动后如果不能正常工作，优先检查：
+### 1. 页面能创建视频任务，但没有 mp4
 
-1. `.env` 是否已配置 `MIMO_API_KEY`
-2. 服务器是否能访问 `https://api.xiaomimimo.com`
-3. 是否安装了 `ffmpeg`，尤其是使用 `MP3` 时
-4. `output/`、`cloned_voices/` 是否有写权限
-5. 可直接访问 `GET /api/diagnose` 查看诊断结果
+先检查：
+
+- 是否安装了 `ffmpeg`
+- `FFMPEG_BIN` 是否正确
+
+### 2. 视频有分镜和字幕，但没有真实配音
+
+说明 MiMo API 没有通，系统走了静音兜底。
+
+检查：
+
+- `MIMO_API_KEY`
+- 网络是否可访问 `https://api.xiaomimimo.com`
+
+### 3. 视频有占位图，没有真实漫画图
+
+说明 OpenAI 兼容生图接口未配置或不可访问。
+
+检查：
+
+- `OPENAI_API_KEY`
+- `OPENAI_BASE_URL`
+- `OPENAI_IMAGE_MODEL`
+
+### 4. 文生视频里看不到克隆音色
+
+刷新页面后重试。  
+当前代码已经支持在文生视频页复用克隆音色。
+
+## 广告 / 资源推荐
+
+如果你需要低价稳定的主流 AI 大模型 API，可查看：
+
+**低价稳定无套路主流 AI 大模型，国内直连 API**
+
+- minimax2.7 百万 token `0.2 元`
+- gpt5.5 百万 token `2 元`
+- gpt-image-2 生图 `1 张 0.1 元`
+
+链接：
+
+https://llm-token.cn/r/INVE8242B72
 

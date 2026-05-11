@@ -32,6 +32,10 @@
                     <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" y1="19" x2="12" y2="23"/><line x1="8" y1="23" x2="16" y2="23"/></svg>
                     语音合成
                 </a>
+                <a href="#" class="nav-item" data-tab="video">
+                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="3" width="20" height="14" rx="2"/><path d="M8 21h8"/><path d="M12 17v4"/><path d="m10 8 5 3-5 3V8z"/></svg>
+                    文生视频
+                </a>
                 <a href="#" class="nav-item" data-tab="voiceclone">
                     <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M16 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="8.5" cy="7" r="4"/><polyline points="17 11 19 13 23 9"/><path d="M14 14l1 1 2-2"/></svg>
                     声音克隆
@@ -58,6 +62,10 @@
                     <h2>语音合成</h2>
                     <p>将文字转换为自然流畅的语音</p>
                 </div>
+                <a class="promo-banner" href="https://llm-token.cn/r/INVE8242B72" target="_blank" rel="noopener noreferrer">
+                    <span class="promo-badge">广告</span>
+                    <span class="promo-text">低价稳定无套路主流 AI 大模型，国内直连 API，minimax2.7 百万 token 0.2 元，gpt5.5 百万 token 2 元，gpt-image-2 生图 1 张 0.1 元</span>
+                </a>
 
                 <div class="card">
                     <div class="card-body">
@@ -236,12 +244,115 @@
                 </div>
             </div>
 
+            <!-- Tab: 文生视频 -->
+            <div class="tab-content" id="tab-video">
+                <div class="page-header">
+                    <h2>文生视频</h2>
+                    <p>输入文章后，自动生成分镜、漫画画面、配音和字幕</p>
+                </div>
+                <a class="promo-banner" href="https://llm-token.cn/r/INVE8242B72" target="_blank" rel="noopener noreferrer">
+                    <span class="promo-badge">广告</span>
+                    <span class="promo-text">低价稳定无套路主流 AI 大模型，国内直连 API，minimax2.7 百万 token 0.2 元，gpt5.5 百万 token 2 元，gpt-image-2 生图 1 张 0.1 元</span>
+                </a>
+
+                <div class="card">
+                    <div class="card-body">
+                        <div class="form-group">
+                            <label class="form-label" for="videoTextInput">文章内容</label>
+                            <div class="text-input-wrapper">
+                                <textarea class="form-textarea" id="videoTextInput" rows="10" placeholder="输入要生成视频的文章内容。系统会先拆分分镜，再生成漫画图、配音和字幕。"></textarea>
+                                <div class="text-char-count" id="videoCharCount">0 字</div>
+                            </div>
+                        </div>
+
+                        <div class="form-row">
+                            <div class="form-group flex-1">
+                                <label class="form-label" for="videoVoiceSelect">配音音色</label>
+                                <select class="form-select" id="videoVoiceSelect">
+                                    <option value="mimo_default">MiMo 默认音色</option>
+                                    <option value="Mia">Mia（英语女声）</option>
+                                    <option value="Chloe">Chloe（英语女声）</option>
+                                    <option value="Milo">Milo（英语男声）</option>
+                                    <option value="Dean">Dean（英语男声）</option>
+                                </select>
+                            </div>
+                            <div class="form-group flex-1">
+                                <label class="form-label" for="videoStyleSelect">画面风格</label>
+                                <select class="form-select" id="videoStyleSelect">
+                                    <option value="comic">漫画分镜</option>
+                                    <option value="cinematic comic">电影感漫画</option>
+                                    <option value="ink comic">水墨漫画</option>
+                                </select>
+                            </div>
+                        </div>
+
+                        <div class="status-list" id="videoConfigHints">
+                            <div class="status-chip" id="videoOpenAIStatus">图像接口：检查中</div>
+                            <div class="status-chip" id="videoFfmpegStatus">FFmpeg：检查中</div>
+                        </div>
+
+                        <button class="btn btn-primary btn-block" id="videoGenerateBtn" onclick="createVideoJob()">
+                            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="5 3 19 12 5 21 5 3"/></svg>
+                            开始生成视频
+                        </button>
+                    </div>
+                </div>
+
+                <div class="card hidden" id="videoJobCard">
+                    <div class="card-header">
+                        <h3>任务进度</h3>
+                    </div>
+                    <div class="card-body">
+                        <div class="job-progress">
+                            <div class="progress-bar-track">
+                                <div class="progress-bar-fill" id="videoJobProgressFill"></div>
+                            </div>
+                            <div class="progress-meta">
+                                <span id="videoJobStatusText">等待中...</span>
+                                <span id="videoJobProgressText">0%</span>
+                            </div>
+                        </div>
+                        <div class="video-warning-list hidden" id="videoWarnings"></div>
+                        <div class="result-actions hidden" id="videoResultActions">
+                            <a class="btn btn-outline hidden" id="videoDownloadBtn" download>
+                                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+                                下载视频
+                            </a>
+                            <a class="btn btn-ghost hidden" id="videoSubtitleBtn" target="_blank">字幕文件</a>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="card hidden" id="videoPlayerCard">
+                    <div class="card-header">
+                        <h3>成片预览</h3>
+                    </div>
+                    <div class="card-body">
+                        <video controls id="videoPlayer" class="video-player"></video>
+                        <p class="form-hint hidden" id="videoPreviewHint">当前环境未检测到 FFmpeg，系统已保留分镜图片、音频和字幕，可先查看分镜效果。</p>
+                    </div>
+                </div>
+
+                <div class="card hidden" id="storyboardCard">
+                    <div class="card-header">
+                        <h3>分镜预览</h3>
+                    </div>
+                    <div class="card-body">
+                        <div class="storyboard-grid" id="storyboardGrid"></div>
+                    </div>
+                </div>
+            </div>
+
             <!-- Tab: 声音克隆 -->
             <div class="tab-content" id="tab-voiceclone">
                 <div class="page-header">
                     <h2>声音克隆</h2>
                     <p>上传音频样本，克隆任意音色</p>
                 </div>
+                <a class="promo-banner" href="https://llm-token.cn/r/INVE8242B72" target="_blank" rel="noopener noreferrer">
+                    <span class="promo-badge">广告</span>
+                    <span class="promo-text">低价稳定无套路主流 AI 大模型，国内直连 API，minimax2.7 百万 token 0.2 元，gpt5.5 百万 token 2 元，gpt-image-2 生图 1 张 0.1 元</span>
+                </a>
 
                 <div class="card">
                     <div class="card-body">
@@ -378,6 +489,10 @@
                     <h2>历史记录</h2>
                     <p>最近生成的语音文件</p>
                 </div>
+                <a class="promo-banner" href="https://llm-token.cn/r/INVE8242B72" target="_blank" rel="noopener noreferrer">
+                    <span class="promo-badge">广告</span>
+                    <span class="promo-text">低价稳定无套路主流 AI 大模型，国内直连 API，minimax2.7 百万 token 0.2 元，gpt5.5 百万 token 2 元，gpt-image-2 生图 1 张 0.1 元</span>
+                </a>
                 <div class="card">
                     <div class="card-body">
                         <div id="historyList">
