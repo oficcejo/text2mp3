@@ -38,3 +38,4 @@ Desktop.ini
 
 # ── Docker ───────────────────────────────────
 # .dockerignore 单独管理
+%SystemDrive%
