@@ -75,10 +75,27 @@ def register_video_mvp_routes(app, deps: Dict[str, Any]):
             "fps": int(os.getenv("VIDEO_FPS", "24")),
             "voice": os.getenv("VIDEO_DEFAULT_VOICE", "mimo_default"),
             "aspect_ratio": os.getenv("VIDEO_ASPECT_RATIO", "16:9"),
-            "image_group_seconds_min": int(os.getenv("IMAGE_GROUP_SECONDS_MIN", "120")),
-            "image_group_seconds_max": int(os.getenv("IMAGE_GROUP_SECONDS_MAX", "180")),
-            "image_group_min_scenes": int(os.getenv("IMAGE_GROUP_MIN_SCENES", "10")),
+            "image_group_seconds_min": int(os.getenv("IMAGE_GROUP_SECONDS_MIN", "90")),
+            "image_group_seconds_max": int(os.getenv("IMAGE_GROUP_SECONDS_MAX", "150")),
+            "image_group_min_scenes": int(os.getenv("IMAGE_GROUP_MIN_SCENES", "6")),
         }
+
+    def resolve_image_group_settings(settings: Dict[str, Any], density: str) -> Dict[str, Any]:
+        resolved = dict(settings)
+        density = (density or 'balanced').strip().lower()
+        if density == 'more':
+            resolved['image_group_seconds_min'] = 60
+            resolved['image_group_seconds_max'] = 100
+            resolved['image_group_min_scenes'] = 4
+        elif density == 'fewer':
+            resolved['image_group_seconds_min'] = max(settings['image_group_seconds_min'], 120)
+            resolved['image_group_seconds_max'] = max(settings['image_group_seconds_max'], 180)
+            resolved['image_group_min_scenes'] = max(settings['image_group_min_scenes'], 8)
+        else:
+            resolved['image_group_seconds_min'] = settings['image_group_seconds_min']
+            resolved['image_group_seconds_max'] = settings['image_group_seconds_max']
+            resolved['image_group_min_scenes'] = settings['image_group_min_scenes']
+        return resolved
 
     def ffmpeg_binary() -> Optional[str]:
         configured = os.getenv("FFMPEG_BIN", "").strip()
@@ -153,8 +170,10 @@ def register_video_mvp_routes(app, deps: Dict[str, Any]):
             image_prompt = str(scene.get("image_prompt") or scene.get("visual_prompt") or "").strip()
             if not narration:
                 continue
+            if subtitle and len(subtitle) < len(narration) * 0.65:
+                subtitle = narration
             if not image_prompt:
-                image_prompt = subtitle or narration[:80]
+                image_prompt = narration[:220]
             duration = scene.get("estimated_duration_sec") or estimate_duration_sec(narration)
             try:
                 duration = float(duration)
@@ -163,7 +182,7 @@ def register_video_mvp_routes(app, deps: Dict[str, Any]):
             normalized_scenes.append({
                 "scene_index": idx,
                 "title": str(scene.get("title") or f"Scene {idx}").strip(),
-                "source_excerpt": str(scene.get("source_excerpt") or narration[:120]).strip(),
+                "source_excerpt": narration[:120].strip(),
                 "narration_text": narration,
                 "subtitle_text": subtitle,
                 "image_prompt": image_prompt,
@@ -179,7 +198,7 @@ def register_video_mvp_routes(app, deps: Dict[str, Any]):
             raise ValueError("planner scenes invalid")
 
         return {
-            "title": str(raw_data.get("title") or split_sentences(text)[0][:40] or "文生视频").strip(),
+            "title": str(raw_data.get("title") or split_sentences(text)[0][:40] or "????").strip(),
             "style": str(raw_data.get("style") or settings["style"]).strip() or settings["style"],
             "aspect_ratio": settings["aspect_ratio"],
             "total_estimated_duration_sec": round(sum(scene["estimated_duration_sec"] for scene in normalized_scenes), 1),
@@ -195,17 +214,16 @@ def register_video_mvp_routes(app, deps: Dict[str, Any]):
         )
         scenes = []
         for idx, chunk in enumerate(chunks, start=1):
-            summary = re.sub(r"\s+", " ", chunk).strip()
-            subtitle = summary if len(summary) <= 72 else summary[:69] + "..."
+            normalized = re.sub(r"[ 	]+", " ", chunk).strip()
             scenes.append({
                 "scene_index": idx,
-                "title": f"分镜 {idx}",
-                "source_excerpt": summary[:120],
+                "title": f"?? {idx}",
+                "source_excerpt": normalized[:120],
                 "narration_text": chunk,
-                "subtitle_text": subtitle,
+                "subtitle_text": normalized,
                 "image_prompt": (
-                    "中文漫画分镜，电影式构图，清晰主体，无对白气泡，无水印，适合视频画面。"
-                    f"场景内容：{subtitle}"
+                    "Chinese comic storyboard, cinematic composition, clear subject, no speech bubbles, no watermark, suitable for video."
+                    f" Scene content: {normalized[:220]}"
                 ),
                 "estimated_duration_sec": estimate_duration_sec(chunk),
                 "image_file": None,
@@ -216,7 +234,7 @@ def register_video_mvp_routes(app, deps: Dict[str, Any]):
             })
 
         return {
-            "title": split_sentences(text)[0][:40] if split_sentences(text) else "文生视频",
+            "title": split_sentences(text)[0][:40] if split_sentences(text) else "????",
             "style": settings["style"],
             "aspect_ratio": settings["aspect_ratio"],
             "total_estimated_duration_sec": round(sum(scene["estimated_duration_sec"] for scene in scenes), 1),
@@ -341,7 +359,7 @@ def register_video_mvp_routes(app, deps: Dict[str, Any]):
                 current_duration = 0.0
 
         if current:
-            if groups and len(current) < min_scenes:
+            if groups and len(current) < max(3, min_scenes // 2):
                 groups[-1].extend(current)
             else:
                 groups.append(current)
@@ -408,6 +426,40 @@ def register_video_mvp_routes(app, deps: Dict[str, Any]):
             shutil.copyfile(source_image_path, frame_path)
         else:
             write_simple_png(frame_path, 1280, 720, (224, 228, 233))
+
+    def generate_group_image(group_index: int, scenes: List[Dict[str, Any]], job_dir: Path, settings: Dict[str, Any]) -> str:
+        width = settings["width"]
+        height = settings["height"]
+        image_path = job_dir / "images" / f"group_{group_index:03d}.png"
+        prompt = build_group_prompt(group_index, scenes, settings["style"])
+        image_bytes = fetch_image_bytes_from_openai(prompt)
+        if image_bytes:
+            image_path.parent.mkdir(parents=True, exist_ok=True)
+            image_path.write_bytes(image_bytes)
+        else:
+            render_placeholder_panel(
+                output_path=image_path,
+                title=f"漫画组 {group_index}",
+                prompt=prompt,
+                width=width,
+                height=max(720, int(height * 0.82)),
+            )
+        return str(image_path.relative_to(job_dir)).replace("\\", "/")
+
+    def generate_scene_frame(scene: Dict[str, Any], image_file: str, job_dir: Path, settings: Dict[str, Any]) -> str:
+        width = settings["width"]
+        height = settings["height"]
+        source_image_path = job_dir / image_file
+        frame_path = job_dir / "frames" / f"scene_{scene['scene_index']:03d}.png"
+        compose_video_frame(
+            source_image_path=source_image_path,
+            frame_path=frame_path,
+            subtitle_text=scene["subtitle_text"],
+            title=scene["title"],
+            width=width,
+            height=height,
+        )
+        return str(frame_path.relative_to(job_dir)).replace("\\", "/")
 
     def generate_scene_image(scene: Dict[str, Any], job_dir: Path, settings: Dict[str, Any]) -> Tuple[str, str]:
         width = settings["width"]
@@ -668,7 +720,7 @@ def register_video_mvp_routes(app, deps: Dict[str, Any]):
         manifest_path = job_dir / "manifest.json"
         manifest = json_read(manifest_path, {})
         config = manifest.get("config", {})
-        settings = get_video_settings()
+        settings = resolve_image_group_settings(get_video_settings(), config.get('image_density', 'balanced'))
         warnings = list(manifest.get("warnings", []))
 
         try:
@@ -792,6 +844,7 @@ def register_video_mvp_routes(app, deps: Dict[str, Any]):
                 "style": (data.get("style") or settings["style"]).strip() or settings["style"],
                 "aspect_ratio": (data.get("aspect_ratio") or settings["aspect_ratio"]).strip() or settings["aspect_ratio"],
                 "image_model": get_openai_settings()["image_model"],
+                "image_density": (data.get("image_density") or "balanced").strip() or "balanced",
             },
             "outputs": {
                 "storyboard_file": None,

@@ -742,6 +742,7 @@ async function createVideoJob() {
     const text = document.getElementById('videoTextInput').value.trim();
     const voice = document.getElementById('videoVoiceSelect').value;
     const style = document.getElementById('videoStyleSelect').value;
+    const imageDensity = document.getElementById('videoImageDensitySelect').value;
     const btn = document.getElementById('videoGenerateBtn');
 
     if (!text) {
@@ -756,7 +757,7 @@ async function createVideoJob() {
         const resp = await fetch('/api/video/jobs', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ text, voice, style, aspect_ratio: '16:9' }),
+            body: JSON.stringify({ text, voice, style, aspect_ratio: '16:9', image_density: imageDensity }),
         });
         const data = await resp.json();
         if (!resp.ok) {
