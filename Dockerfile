@@ -5,6 +5,7 @@ WORKDIR /app
 # 安装系统依赖（soundfile 需要 libsndfile）
 RUN apt-get update && apt-get install -y --no-install-recommends \
     libsndfile1 \
+    ffmpeg \
     && rm -rf /var/lib/apt/lists/*
 
 # 先复制依赖文件，利用 Docker 层缓存

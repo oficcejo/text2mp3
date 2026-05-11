@@ -9,10 +9,8 @@ services:
     env_file:
       - .env
     volumes:
-      # 持久化生成的音频文件
       - ./output:/app/output
-      # 持久化克隆音色数据
       - ./cloned_voices:/app/cloned_voices
-      # 持久化历史记录
       - ./history.json:/app/history.json
+      - ./jobs:/app/jobs
     restart: unless-stopped
