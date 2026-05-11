@@ -1,0 +1,400 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>小米 MiMo TTS - 文字转语音</title>
+    <link rel="stylesheet" href="/static/css/style.css">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:opsz,wght@14..32,400;14..32,500;14..32,600;14..32,700&display=swap" rel="stylesheet">
+</head>
+<body>
+    <div class="app-container">
+        <!-- Sidebar -->
+        <aside class="sidebar">
+            <div class="sidebar-header">
+                <div class="logo">
+                    <svg width="32" height="32" viewBox="0 0 32 32" fill="none">
+                        <rect width="32" height="32" rx="8" fill="#2563EB"/>
+                        <path d="M16 8C13.2 8 11 10.2 11 13V16C11 18.8 13.2 21 16 21C18.8 21 21 18.8 21 16V13C21 10.2 18.8 8 16 8Z" fill="white"/>
+                        <path d="M12 20V22C12 23.1 12.9 24 14 24H18C19.1 24 20 23.1 20 22V20" stroke="white" stroke-width="1.5" stroke-linecap="round"/>
+                        <path d="M16 24V26" stroke="white" stroke-width="1.5" stroke-linecap="round"/>
+                    </svg>
+                    <div class="logo-text">
+                        <h1>MiMo TTS</h1>
+                        <span>文字转语音工具</span>
+                    </div>
+                </div>
+            </div>
+
+            <nav class="sidebar-nav">
+                <a href="#" class="nav-item active" data-tab="synthesize">
+                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" y1="19" x2="12" y2="23"/><line x1="8" y1="23" x2="16" y2="23"/></svg>
+                    语音合成
+                </a>
+                <a href="#" class="nav-item" data-tab="voiceclone">
+                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M16 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="8.5" cy="7" r="4"/><polyline points="17 11 19 13 23 9"/><path d="M14 14l1 1 2-2"/></svg>
+                    声音克隆
+                </a>
+                <a href="#" class="nav-item" data-tab="history">
+                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+                    历史记录
+                </a>
+            </nav>
+
+            <div class="sidebar-footer">
+                <div class="api-status" id="apiStatus">
+                    <span class="status-dot" id="statusDot"></span>
+                    <span id="statusText">检查 API 密钥...</span>
+                </div>
+            </div>
+        </aside>
+
+        <!-- Main Content -->
+        <main class="main-content">
+            <!-- Tab: 语音合成 -->
+            <div class="tab-content active" id="tab-synthesize">
+                <div class="page-header">
+                    <h2>语音合成</h2>
+                    <p>将文字转换为自然流畅的语音</p>
+                </div>
+
+                <div class="card">
+                    <div class="card-body">
+                        <!-- 模型选择 -->
+                        <div class="form-group">
+                            <label class="form-label">选择模型</label>
+                            <div class="model-selector" id="modelSelector">
+                                <button class="model-option active" data-model="mimo-v2.5-tts">
+                                    <span class="model-name">MiMo-V2.5-TTS</span>
+                                    <span class="model-desc">内置高品质音色</span>
+                                </button>
+                                <button class="model-option" data-model="mimo-v2.5-tts-voicedesign">
+                                    <span class="model-name">VoiceDesign</span>
+                                    <span class="model-desc">文字描述生成音色</span>
+                                </button>
+                                <button class="model-option" data-model="mimo-v2.5-tts-voiceclone">
+                                    <span class="model-name">VoiceClone</span>
+                                    <span class="model-desc">音频样本克隆音色</span>
+                                </button>
+                                <button class="model-option" data-model="mimo-v2-tts">
+                                    <span class="model-name">MiMo-V2-TTS</span>
+                                    <span class="model-desc">兼容旧版接口</span>
+                                </button>
+                            </div>
+                        </div>
+
+                        <!-- 音色选择 (v2.5-tts & v2-tts) -->
+                        <div class="form-group" id="voiceGroup">
+                            <label class="form-label" for="voiceSelect">选择音色</label>
+                            <select class="form-select" id="voiceSelect">
+                                <option value="mimo_default">MiMo 默认音色</option>
+                                <option value="Mia">Mia（英语女声）</option>
+                                <option value="Chloe">Chloe（英语女声）</option>
+                                <option value="Milo">Milo（英语男声）</option>
+                                <option value="Dean">Dean（英语男声）</option>
+                            </select>
+                        </div>
+
+                        <!-- 声音描述 (VoiceDesign) -->
+                        <div class="form-group hidden" id="voiceDesignGroup">
+                            <label class="form-label" for="voiceDesignInput">音色描述</label>
+                            <textarea class="form-textarea" id="voiceDesignInput" rows="3" placeholder="用一段话描述你想要的音色，例如：一个温暖、沉稳的中年男声，带有一点磁性，说话节奏缓慢而坚定..."></textarea>
+                            <p class="form-hint">VoiceDesign 模型必须填写音色描述，将以此生成全新音色</p>
+                        </div>
+
+                        <!-- 文本输入 -->
+                        <div class="form-group">
+                            <label class="form-label" for="textInput">合成文本</label>
+                            <div class="text-input-wrapper">
+                                <textarea class="form-textarea" id="textInput" rows="6" placeholder="输入要转换为语音的文字内容...&#10;&#10;支持音频标签：&#10;(开心)今天真是个好日子！&#10;(叹气)终于忙完了...&#10;[清嗓子]我要说个重要的事情"></textarea>
+                                <div class="text-char-count" id="charCount">0 字</div>
+                            </div>
+                        </div>
+
+                        <!-- 风格指令 -->
+                        <div class="form-group">
+                            <label class="form-label" for="styleInput">
+                                风格指令
+                                <span class="badge">可选</span>
+                            </label>
+                            <textarea class="form-textarea" id="styleInput" rows="2" placeholder="描述朗读的风格和情感，例如：用欢快活泼的语气朗读，语速稍快，充满自信和激情"></textarea>
+                            <p class="form-hint">支持导演模式：从【角色】【场景】【指导】三个维度描述</p>
+                        </div>
+
+                        <!-- 选项 -->
+                        <div class="form-row">
+                            <div class="form-group flex-1">
+                                <label class="form-label" for="formatSelect">输出格式</label>
+                                <select class="form-select" id="formatSelect">
+                                    <option value="mp3">MP3（推荐）</option>
+                                    <option value="wav">WAV</option>
+                                </select>
+                            </div>
+                            <div class="form-group flex-1">
+                                <label class="form-label">
+                                    <span>唱歌模式</span>
+                                    <label class="toggle">
+                                        <input type="checkbox" id="singingMode">
+                                        <span class="toggle-slider"></span>
+                                    </label>
+                                </label>
+                                <p class="form-hint">仅 MiMo-V2.5-TTS 支持</p>
+                            </div>
+                        </div>
+
+                        <!-- 提交 -->
+                        <button class="btn btn-primary btn-block" id="synthesizeBtn" onclick="synthesize()">
+                            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="5 3 19 12 5 21 5 3"/></svg>
+                            生成语音
+                        </button>
+                    </div>
+                </div>
+
+                <!-- 结果区域 -->
+                <div class="card hidden" id="synthesizeResult">
+                    <div class="card-header">
+                        <h3>生成结果</h3>
+                    </div>
+                    <div class="card-body">
+                        <div class="audio-player-wrapper">
+                            <audio controls id="audioPlayer" class="audio-player"></audio>
+                        </div>
+                        <div class="result-actions">
+                            <a class="btn btn-outline" id="downloadBtn" download>
+                                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+                                下载音频
+                            </a>
+                            <button class="btn btn-ghost" onclick="copyResultLink()">
+                                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>
+                                复制链接
+                            </button>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- 加载状态 - 进度面板 -->
+                <div class="progress-overlay hidden" id="progressOverlay">
+                    <div class="progress-panel">
+                        <div class="progress-header">
+                            <h3>语音合成进度</h3>
+                            <span class="progress-timer" id="progressTimer">0s</span>
+                        </div>
+
+                        <!-- 进度条 -->
+                        <div class="progress-bar-track">
+                            <div class="progress-bar-fill" id="progressBarFill"></div>
+                        </div>
+                        <div class="progress-percent" id="progressPercent">0%</div>
+
+                        <!-- 分阶段状态指示器 -->
+                        <div class="stage-indicators">
+                            <div class="stage-item" data-stage="preparing">
+                                <div class="stage-icon">
+                                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+                                </div>
+                                <div class="stage-label">准备中</div>
+                            </div>
+                            <div class="stage-connector"></div>
+                            <div class="stage-item" data-stage="connecting">
+                                <div class="stage-icon">
+                                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 12h14"/><path d="M12 5l7 7-7 7"/></svg>
+                                </div>
+                                <div class="stage-label">连接 API</div>
+                            </div>
+                            <div class="stage-connector"></div>
+                            <div class="stage-item" data-stage="generating">
+                                <div class="stage-icon">
+                                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="5 3 19 12 5 21 5 3"/></svg>
+                                </div>
+                                <div class="stage-label">语音生成</div>
+                            </div>
+                            <div class="stage-connector"></div>
+                            <div class="stage-item" data-stage="processing">
+                                <div class="stage-icon">
+                                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="14.5 17.5 3 6 3 3 6 3 17.5 14.5"/><line x1="13" y1="19" x2="19" y2="13"/><line x1="16" y1="21" x2="21" y2="16"/><polyline points="21 7 19 5 17 7 19 9"/></svg>
+                                </div>
+                                <div class="stage-label">处理中</div>
+                            </div>
+                            <div class="stage-connector"></div>
+                            <div class="stage-item" data-stage="complete">
+                                <div class="stage-icon">
+                                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="20 6 9 17 4 12"/></svg>
+                                </div>
+                                <div class="stage-label">完成</div>
+                            </div>
+                        </div>
+
+                        <!-- 实时状态消息 -->
+                        <div class="progress-message" id="progressMessage">正在准备...</div>
+
+                        <!-- 取消按钮 -->
+                        <button class="btn btn-ghost" id="cancelProgressBtn" onclick="cancelSynthesis()">
+                            取消
+                        </button>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Tab: 声音克隆 -->
+            <div class="tab-content" id="tab-voiceclone">
+                <div class="page-header">
+                    <h2>声音克隆</h2>
+                    <p>上传音频样本，克隆任意音色</p>
+                </div>
+
+                <div class="card">
+                    <div class="card-body">
+                        <div class="form-group">
+                            <label class="form-label" for="cloneNameInput">
+                                音色名称
+                                <span class="badge">可选</span>
+                            </label>
+                            <input type="text" class="form-input" id="cloneNameInput" placeholder="为克隆的音色命名，便于后续使用">
+                        </div>
+                        <div class="form-group">
+                            <label class="form-label">音频样本</label>
+                            <div class="upload-area" id="uploadArea">
+                                <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="#94a3b8" stroke-width="1.5"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+                                <p class="upload-text">拖拽音频文件到此处，或点击选择文件</p>
+                                <p class="upload-hint">支持 MP3 / WAV 格式，建议 5-30 秒清晰人声样本</p>
+                                <input type="file" id="audioFileInput" accept=".mp3,.wav" hidden>
+                                <button class="btn btn-outline" onclick="document.getElementById('audioFileInput').click()">选择文件</button>
+                            </div>
+                            <div class="file-info hidden" id="fileInfo">
+                                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>
+                                <span id="fileName"></span>
+                                <button class="btn-icon" onclick="clearFile()">
+                                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+                                </button>
+                            </div>
+                        </div>
+
+                        <div class="form-group">
+                            <label class="form-label" for="cloneTextInput">合成文本</label>
+                            <textarea class="form-textarea" id="cloneTextInput" rows="5" placeholder="输入要使用克隆音色朗读的文字..."></textarea>
+                            <div class="text-char-count" style="margin-top:4px;font-size:12px;color:var(--text-muted)">
+                                <span id="cloneCharCount">0 字</span>
+                                <span id="cloneTokenEst" style="margin-left:8px"></span>
+                            </div>
+                        </div>
+
+                        <div class="form-group">
+                            <label class="form-label" for="cloneStyleInput">
+                                风格指令
+                                <span class="badge">可选</span>
+                            </label>
+                            <textarea class="form-textarea" id="cloneStyleInput" rows="2" placeholder="描述朗读风格，如：(低沉缓慢，略带沙哑)"></textarea>
+                        </div>
+
+                        <div class="form-row">
+                            <div class="form-group flex-1">
+                                <label class="form-label" for="cloneFormatSelect">输出格式</label>
+                                <select class="form-select" id="cloneFormatSelect">
+                                    <option value="mp3">MP3</option>
+                                    <option value="wav">WAV</option>
+                                </select>
+                            </div>
+                        </div>
+
+                        <button class="btn btn-primary btn-block" id="cloneBtn" onclick="cloneVoice()">
+                            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="5 3 19 12 5 21 5 3"/></svg>
+                            开始克隆 & 合成
+                        </button>
+                    </div>
+                </div>
+
+                <div class="card hidden" id="cloneResult">
+                    <div class="card-header">
+                        <h3>克隆结果</h3>
+                    </div>
+                    <div class="card-body">
+                        <div class="audio-player-wrapper">
+                            <audio controls id="cloneAudioPlayer" class="audio-player"></audio>
+                        </div>
+                        <div class="result-actions">
+                            <a class="btn btn-outline" id="cloneDownloadBtn" download>
+                                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+                                下载音频
+                            </a>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- 已保存的克隆音色 -->
+                <div class="card" id="clonedVoicesCard">
+                    <div class="card-header">
+                        <h3>已保存的克隆音色</h3>
+                        <span class="badge" id="clonedVoicesCount">0</span>
+                    </div>
+                    <div class="card-body">
+                        <div id="clonedVoicesList">
+                            <div class="empty-state" id="emptyClonedVoices">
+                <div class="progress-overlay hidden" id="cloneProgressOverlay">
+                    <div class="progress-panel">
+                        <div class="progress-header">
+                            <h3>声音克隆进度</h3>
+                            <span class="progress-timer" id="cloneProgressTimer">0s</span>
+                        </div>
+                        <div class="progress-bar-track">
+                            <div class="progress-bar-fill" id="cloneProgressBarFill"></div>
+                        </div>
+                        <div class="progress-percent" id="cloneProgressPercent">0%</div>
+                        <div class="stage-indicators">
+                            <div class="stage-item" data-stage="preparing">
+                                <div class="stage-icon"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg></div>
+                                <div class="stage-label">准备中</div>
+                            </div>
+                            <div class="stage-connector"></div>
+                            <div class="stage-item" data-stage="connecting">
+                                <div class="stage-icon"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 12h14"/><path d="M12 5l7 7-7 7"/></svg></div>
+                                <div class="stage-label">连接 API</div>
+                            </div>
+                            <div class="stage-connector"></div>
+                            <div class="stage-item" data-stage="generating">
+                                <div class="stage-icon"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="5 3 19 12 5 21 5 3"/></svg></div>
+                                <div class="stage-label">语音生成</div>
+                            </div>
+                            <div class="stage-connector"></div>
+                            <div class="stage-item" data-stage="processing">
+                                <div class="stage-icon"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="14.5 17.5 3 6 3 3 6 3 17.5 14.5"/><line x1="13" y1="19" x2="19" y2="13"/><line x1="16" y1="21" x2="21" y2="16"/><polyline points="21 7 19 5 17 7 19 9"/></svg></div>
+                                <div class="stage-label">处理中</div>
+                            </div>
+                            <div class="stage-connector"></div>
+                            <div class="stage-item" data-stage="complete">
+                                <div class="stage-icon"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="20 6 9 17 4 12"/></svg></div>
+                                <div class="stage-label">完成</div>
+                            </div>
+                        </div>
+                        <div class="progress-message" id="cloneProgressMessage">正在准备...</div>
+                        <button class="btn btn-ghost" id="cancelCloneProgressBtn" onclick="cancelCloneSynthesis()">取消</button>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Tab: 历史记录 -->
+            <div class="tab-content" id="tab-history">
+                <div class="page-header">
+                    <h2>历史记录</h2>
+                    <p>最近生成的语音文件</p>
+                </div>
+                <div class="card">
+                    <div class="card-body">
+                        <div id="historyList">
+                            <div class="empty-state" id="emptyHistory">
+                                <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="#94a3b8" stroke-width="1.5"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+                                <p>暂无生成记录</p>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </main>
+    </div>
+
+    <!-- Toast -->
+    <div class="toast-container" id="toastContainer"></div>
+
+    <script src="/static/js/main.js"></script>
+</body>
+</html>

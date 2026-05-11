@@ -1,0 +1,30 @@
+# ── 密钥 ─────────────────────────────────────
+.env
+
+# ── Git ───────────────────────────────────────
+.git/
+.gitignore
+.dockerignore
+
+# ── Python 缓存 ──────────────────────────────
+__pycache__/
+*.py[cod]
+venv/
+.venv/
+
+# ── IDE ───────────────────────────────────────
+.vscode/
+.idea/
+.deepseek/
+
+# ── 运行时数据（通过卷挂载，不进镜像）────────
+output/
+cloned_voices/
+history.json
+
+# ── 杂项 ─────────────────────────────────────
+*.log
+*.md
+.DS_Store
+Thumbs.db
+docker-compose.yml
