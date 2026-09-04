@@ -85,7 +85,7 @@ function setupCharCounters() {
 
     updateCounter('textInput', 'charCount', null);
     updateCounter('cloneTextInput', 'cloneCharCount', 'cloneTokenEst');
-    updateCounter('videoTextInput', 'videoCharCount', null);
+    updateCounter('videoTextInput', 'videoCharCount', 'videoTokenEst');
 }
 
 // ============================================================
@@ -870,11 +870,34 @@ async function loadVideoConfig() {
 
         ffmpegStatus.textContent = data.ffmpeg_available ? 'FFmpeg：已就绪（可生成运镜动效与硬字幕 MP4）' : 'FFmpeg：未检测到，将只保留分镜产物';
         ffmpegStatus.className = 'status-chip ' + (data.ffmpeg_available ? 'success' : 'warn');
+
+        // 加载最新任务状态
+        loadLatestVideoJob();
     } catch (e) {
         openaiStatus.textContent = '图像接口：检查失败';
         ffmpegStatus.textContent = 'FFmpeg：检查失败';
         openaiStatus.className = 'status-chip warn';
         ffmpegStatus.className = 'status-chip warn';
+    }
+}
+
+async function loadLatestVideoJob() {
+    try {
+        const resp = await fetch('/api/video/jobs');
+        const data = await resp.json();
+        if (data.jobs && data.jobs.length > 0) {
+            const latestJob = data.jobs[0];
+            currentVideoJobId = latestJob.job_id;
+            document.getElementById('videoJobCard').classList.remove('hidden');
+            document.getElementById('storyboardCard').classList.remove('hidden');
+            document.getElementById('videoPlayerCard').classList.remove('hidden');
+            renderVideoJob(latestJob);
+            if (['pending', 'planning', 'generating_assets', 'building_subtitles', 'rendering_video'].includes(latestJob.status)) {
+                startVideoPolling(latestJob.job_id);
+            }
+        }
+    } catch (e) {
+        console.warn('加载最近视频任务失败:', e);
     }
 }
 
@@ -971,6 +994,39 @@ function renderVideoJob(job) {
     const displayStatus = job.detail_message || mapVideoJobStatus(job.status, job.error);
     statusText.textContent = displayStatus;
     progressText.textContent = (job.progress || 0) + '%';
+
+    // 渲染资产消耗指标看板 (生图张数、大模型 Token 数、配音字数与时长)
+    const metricsPanel = document.getElementById('videoMetricsPanel');
+    if (metricsPanel) {
+        const m = job.metrics;
+        if (m) {
+            metricsPanel.classList.remove('hidden');
+            const imgVal = document.getElementById('metricImagesVal');
+            const imgSub = document.getElementById('metricImagesSub');
+            const tokVal = document.getElementById('metricTokensVal');
+            const tokSub = document.getElementById('metricTokensSub');
+            const audVal = document.getElementById('metricAudioVal');
+            const audSub = document.getElementById('metricAudioSub');
+
+            if (imgVal) imgVal.textContent = `${m.images_generated || 0} 张`;
+            if (imgSub) {
+                const totalG = m.images_total || (job.scenes ? Math.ceil(job.scenes.length / 6) : 0);
+                const aiSuccess = m.images_ai_success != null ? m.images_ai_success : (m.images_generated || 0);
+                imgSub.textContent = `共 ${totalG} 组画面 · AI实生 ${aiSuccess} 张`;
+            }
+
+            if (tokVal) tokVal.textContent = `${(m.total_tokens || 0).toLocaleString()} Tokens`;
+            if (tokSub) tokSub.textContent = `输入 ${(m.prompt_tokens || 0).toLocaleString()} / 输出 ${(m.completion_tokens || 0).toLocaleString()}`;
+
+            if (audVal) audVal.textContent = `${(m.total_characters || 0).toLocaleString()} 字`;
+            if (audSub) {
+                const dur = Math.round(m.total_duration_sec || 0);
+                audSub.textContent = `共 ${m.total_scenes || (job.scenes ? job.scenes.length : 0)} 个分镜 · 约 ${dur} 秒成片`;
+            }
+        } else {
+            metricsPanel.classList.add('hidden');
+        }
+    }
 
     // 动态同步主操作按钮状态
     const isOngoing = ['pending', 'planning', 'generating_assets', 'building_subtitles', 'rendering_video'].includes(job.status);

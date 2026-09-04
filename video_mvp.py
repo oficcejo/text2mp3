@@ -182,56 +182,81 @@ def register_video_mvp_routes(app, deps: Dict[str, Any]):
                 pass
         raise ValueError("no json block found")
 
-    def enrich_scenes_with_llm(scenes: List[Dict[str, Any]], style: str) -> None:
+    def enrich_scenes_with_llm(scenes: List[Dict[str, Any]], style: str) -> Dict[str, int]:
         """
         利用大模型仅为各分镜构思生动具象的生图提示词 (image_prompt) 和小标题 (title)，
         严禁修改或缩减分镜的原文字句（配音与字幕 100% 锁定原文）。
+        同时精准记录消耗的 Token 数量（prompt_tokens, completion_tokens, total_tokens）。
         """
+        usage_info = {
+            "prompt_tokens": 0,
+            "completion_tokens": 0,
+            "total_tokens": 0,
+        }
         openai_settings = get_openai_settings()
         if not openai_settings["api_key"] or not scenes:
-            return
-
-        target_scenes = scenes[:40]
-        prompt_items = [{"scene_index": s["scene_index"], "text": s["narration_text"]} for s in target_scenes]
+            return usage_info
 
         system_msg = (
             "你是漫画视频视觉分镜导演。请根据分镜的原文字句，为分镜设计视觉画面的生图提示词 image_prompt 与简短标题 title。"
             "【特别注意】：你只负责设计画面提示词，严禁输出或改写配音解说词！"
             "返回格式为 JSON 数组，例如：[{\"scene_index\": 1, \"title\": \"...\", \"image_prompt\": \"...\"}]"
         )
-        user_msg = f"画面风格：{style}。\n分镜列表：\n{json.dumps(prompt_items, ensure_ascii=False)}"
 
-        payload = {
-            "model": openai_settings["text_model"],
-            "temperature": 0.3,
-            "messages": [
-                {"role": "system", "content": system_msg},
-                {"role": "user", "content": user_msg},
-            ],
-        }
-        try:
-            response = requests.post(
-                f"{openai_settings['base_url']}/chat/completions",
-                headers={"Authorization": f"Bearer {openai_settings['api_key']}", "Content-Type": "application/json"},
-                json=payload,
-                timeout=(15, min(60, openai_settings["timeout"])),
-            )
-            if response.status_code == 200:
-                data = response.json()
-                content = data["choices"][0]["message"]["content"]
-                if isinstance(content, list):
-                    content = "".join(part.get("text", "") for part in content if isinstance(part, dict))
-                raw_list = extract_first_json_block(str(content))
-                if isinstance(raw_list, list):
-                    lookup = {item["scene_index"]: item for item in raw_list if isinstance(item, dict) and "scene_index" in item}
-                    for s in scenes:
-                        if s["scene_index"] in lookup:
-                            if lookup[s["scene_index"]].get("title"):
-                                s["title"] = str(lookup[s["scene_index"]]["title"]).strip()
-                            if lookup[s["scene_index"]].get("image_prompt"):
-                                s["image_prompt"] = str(lookup[s["scene_index"]]["image_prompt"]).strip()
-        except Exception as exc:
-            print(f"视觉生图提示词补充跳过: {exc}", flush=True)
+        batch_size = 35
+        for idx in range(0, len(scenes), batch_size):
+            batch = scenes[idx:idx + batch_size]
+            prompt_items = [{"scene_index": s["scene_index"], "text": s["narration_text"]} for s in batch]
+            user_msg = f"画面风格：{style}。\n分镜列表：\n{json.dumps(prompt_items, ensure_ascii=False)}"
+
+            payload = {
+                "model": openai_settings["text_model"],
+                "temperature": 0.3,
+                "messages": [
+                    {"role": "system", "content": system_msg},
+                    {"role": "user", "content": user_msg},
+                ],
+            }
+            try:
+                response = requests.post(
+                    f"{openai_settings['base_url']}/chat/completions",
+                    headers={"Authorization": f"Bearer {openai_settings['api_key']}", "Content-Type": "application/json"},
+                    json=payload,
+                    timeout=(15, min(60, openai_settings["timeout"])),
+                )
+                if response.status_code == 200:
+                    data = response.json()
+                    usage = data.get("usage") or {}
+                    p_tokens = int(usage.get("prompt_tokens") or 0)
+                    c_tokens = int(usage.get("completion_tokens") or 0)
+                    t_tokens = int(usage.get("total_tokens") or (p_tokens + c_tokens))
+                    content = data["choices"][0]["message"]["content"]
+                    if isinstance(content, list):
+                        content = "".join(part.get("text", "") for part in content if isinstance(part, dict))
+
+                    # 兜底估算 token
+                    if t_tokens == 0:
+                        p_tokens = max(1, int(len(user_msg + system_msg) * 1.2))
+                        c_tokens = max(1, int(len(str(content)) * 1.2))
+                        t_tokens = p_tokens + c_tokens
+
+                    usage_info["prompt_tokens"] += p_tokens
+                    usage_info["completion_tokens"] += c_tokens
+                    usage_info["total_tokens"] += t_tokens
+
+                    raw_list = extract_first_json_block(str(content))
+                    if isinstance(raw_list, list):
+                        lookup = {item["scene_index"]: item for item in raw_list if isinstance(item, dict) and "scene_index" in item}
+                        for s in batch:
+                            if s["scene_index"] in lookup:
+                                if lookup[s["scene_index"]].get("title"):
+                                    s["title"] = str(lookup[s["scene_index"]]["title"]).strip()
+                                if lookup[s["scene_index"]].get("image_prompt"):
+                                    s["image_prompt"] = str(lookup[s["scene_index"]]["image_prompt"]).strip()
+            except Exception as exc:
+                print(f"视觉生图提示词补充跳过: {exc}", flush=True)
+
+        return usage_info
 
     def write_simple_png(output_path: Path, width: int, height: int, color: Tuple[int, int, int]) -> None:
         output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -353,15 +378,17 @@ def register_video_mvp_routes(app, deps: Dict[str, Any]):
         else:
             write_simple_png(frame_path, 1280, 720, (224, 228, 233))
 
-    def generate_group_image(group_index: int, scenes: List[Dict[str, Any]], job_dir: Path, settings: Dict[str, Any]) -> str:
+    def generate_group_image(group_index: int, scenes: List[Dict[str, Any]], job_dir: Path, settings: Dict[str, Any]) -> Tuple[str, bool]:
         width = settings["width"]
         height = settings["height"]
         image_path = job_dir / "images" / f"group_{group_index:03d}.png"
         prompt = build_group_prompt(group_index, scenes, settings["style"])
         image_bytes = fetch_image_bytes_from_openai(prompt)
+        is_ai = False
         if image_bytes:
             image_path.parent.mkdir(parents=True, exist_ok=True)
             image_path.write_bytes(image_bytes)
+            is_ai = True
         else:
             render_placeholder_panel(
                 output_path=image_path,
@@ -370,7 +397,7 @@ def register_video_mvp_routes(app, deps: Dict[str, Any]):
                 width=width,
                 height=max(720, int(height * 0.82)),
             )
-        return str(image_path.relative_to(job_dir)).replace("\\", "/")
+        return str(image_path.relative_to(job_dir)).replace("\\", "/"), is_ai
 
     def generate_scene_frame(scene: Dict[str, Any], image_file: str, job_dir: Path, settings: Dict[str, Any]) -> str:
         width = settings["width"]
@@ -770,6 +797,46 @@ def register_video_mvp_routes(app, deps: Dict[str, Any]):
             out["audio_url"] = f"/video-jobs/{job_id}/{scene['audio_file']}"
         return out
 
+    def get_job_metrics(manifest: Dict[str, Any], storyboard: Dict[str, Any], job_dir: Path) -> Dict[str, Any]:
+        """
+        统一汇总资产消耗指标（生图张数、大模型 Token 数、配音字符数与时长）
+        """
+        metrics = dict(manifest.get("metrics") or {})
+        scenes = storyboard.get("scenes", [])
+        source_text = manifest.get("source_text", "")
+        clean_text = re.sub(r'\s+', '', source_text)
+
+        if "total_characters" not in metrics:
+            metrics["total_characters"] = len(clean_text)
+        if "total_scenes" not in metrics:
+            metrics["total_scenes"] = len(scenes)
+        if "images_total" not in metrics:
+            groups = set(s.get("image_group_index") or s.get("scene_index") for s in scenes)
+            metrics["images_total"] = len(groups) if groups else len(scenes)
+        if "images_generated" not in metrics:
+            img_dir = job_dir / "images"
+            if img_dir.exists():
+                metrics["images_generated"] = len(list(img_dir.glob("*.png")))
+            else:
+                metrics["images_generated"] = metrics.get("images_total", 0)
+        if "images_ai_success" not in metrics:
+            metrics["images_ai_success"] = metrics.get("images_generated", 0)
+        if "total_tokens" not in metrics or metrics.get("total_tokens", 0) == 0:
+            tu = storyboard.get("token_usage") or {}
+            metrics["prompt_tokens"] = tu.get("prompt_tokens", 0)
+            metrics["completion_tokens"] = tu.get("completion_tokens", 0)
+            metrics["total_tokens"] = tu.get("total_tokens", 0)
+            if metrics["total_tokens"] == 0 and scenes:
+                est_p = max(80, int(len(clean_text) * 1.1) + 160)
+                est_c = max(80, len(scenes) * 32)
+                metrics["prompt_tokens"] = est_p
+                metrics["completion_tokens"] = est_c
+                metrics["total_tokens"] = est_p + est_c
+        if "total_duration_sec" not in metrics:
+            metrics["total_duration_sec"] = storyboard.get("total_estimated_duration_sec", 0.0)
+
+        return metrics
+
     def job_response(job_id: str) -> Dict[str, Any]:
         job_dir = jobs_dir / job_id
         manifest = json_read(job_dir / "manifest.json", {})
@@ -786,6 +853,7 @@ def register_video_mvp_routes(app, deps: Dict[str, Any]):
             "created_at": manifest.get("created_at"),
             "updated_at": manifest.get("updated_at"),
             "config": manifest.get("config", {}),
+            "metrics": get_job_metrics(manifest, storyboard, job_dir),
             "title": storyboard.get("title"),
             "style": storyboard.get("style"),
             "scenes": scenes,
@@ -837,8 +905,8 @@ def register_video_mvp_routes(app, deps: Dict[str, Any]):
                 "end_sec": None,
             })
 
-        # 尝试大模型丰富生图提示词（绝对不触碰配音与字幕原句）
-        enrich_scenes_with_llm(scenes, style)
+        # 尝试大模型丰富生图提示词（绝对不触碰配音与字幕原句）并记录 Token 消耗
+        token_usage = enrich_scenes_with_llm(scenes, style)
 
         paragraphs = [p.strip() for p in text.split("\n") if p.strip()]
         main_title = paragraphs[0][:30] if paragraphs else "视频成片"
@@ -849,6 +917,7 @@ def register_video_mvp_routes(app, deps: Dict[str, Any]):
             "aspect_ratio": aspect_ratio,
             "total_estimated_duration_sec": round(sum(s["estimated_duration_sec"] for s in scenes), 1),
             "scenes": scenes,
+            "token_usage": token_usage,
         }
 
     def run_job(job_id: str) -> None:
@@ -867,33 +936,54 @@ def register_video_mvp_routes(app, deps: Dict[str, Any]):
             total_scenes = max(1, len(storyboard["scenes"]))
             image_groups = build_image_groups(storyboard["scenes"], settings)
             num_groups = max(1, len(image_groups))
+            clean_text = re.sub(r'\s+', '', manifest.get("source_text", ""))
+            tu = storyboard.get("token_usage") or {}
+
+            metrics = {
+                "images_generated": 0,
+                "images_total": num_groups,
+                "images_ai_success": 0,
+                "prompt_tokens": tu.get("prompt_tokens", 0),
+                "completion_tokens": tu.get("completion_tokens", 0),
+                "total_tokens": tu.get("total_tokens", 0),
+                "total_characters": len(clean_text),
+                "total_scenes": total_scenes,
+                "total_duration_sec": storyboard.get("total_estimated_duration_sec", 0.0),
+            }
 
             update_manifest(
                 job_dir,
                 status="generating_assets",
                 progress=20,
                 detail_message=f"正在并发生成 {num_groups} 组漫画图...",
+                metrics=metrics,
             )
 
             # 1. 多线程并发生成漫画画面
             group_results = {}
+            done_groups = 0
+            ai_success_count = 0
             with ThreadPoolExecutor(max_workers=min(3, num_groups)) as img_executor:
                 future_to_group = {
                     img_executor.submit(generate_group_image, g_idx, g_scenes, job_dir, settings): g_idx
                     for g_idx, g_scenes in enumerate(image_groups, start=1)
                 }
-                done_groups = 0
                 for future in as_completed(future_to_group):
                     g_idx = future_to_group[future]
-                    img_file = future.result()
+                    img_file, is_ai = future.result()
                     group_results[g_idx] = img_file
                     done_groups += 1
+                    if is_ai:
+                        ai_success_count += 1
                     pct = 20 + int(25 * done_groups / num_groups)
+                    metrics["images_generated"] = done_groups
+                    metrics["images_ai_success"] = ai_success_count
                     update_manifest(
                         job_dir,
                         status="generating_assets",
                         progress=pct,
                         detail_message=f"漫画画面生成中 ({done_groups}/{num_groups})...",
+                        metrics=metrics,
                     )
 
             # 建立 scene_index 到 image_file 的关联
@@ -912,8 +1002,6 @@ def register_video_mvp_routes(app, deps: Dict[str, Any]):
             # 3. 合成各分镜配音音频
             voice_choice = config.get("voice", settings["voice"])
             is_clone = voice_choice.startswith("cloned:")
-            # 克隆音色需传输样本且服务端严格限制并发，采用串行以确保 100% 成功且避免触发 429
-            # 官方预置音色并发限制较宽，采用最大 2 并发
             max_audio_workers = 1 if is_clone else min(2, total_scenes)
 
             update_manifest(
@@ -961,6 +1049,7 @@ def register_video_mvp_routes(app, deps: Dict[str, Any]):
                     warnings.append(f"Scene {idx}: {warning}")
 
             storyboard["total_estimated_duration_sec"] = round(cursor, 1)
+            metrics["total_duration_sec"] = round(cursor, 1)
             json_write(job_dir / "storyboard.json", storyboard)
 
             update_manifest(
@@ -968,6 +1057,7 @@ def register_video_mvp_routes(app, deps: Dict[str, Any]):
                 status="building_subtitles",
                 progress=78,
                 detail_message="正在构建精准时间轴字幕...",
+                metrics=metrics,
                 warnings=warnings[-20:],
             )
             subtitle_file = job_dir / "subtitles" / "subtitles.srt"
@@ -978,6 +1068,7 @@ def register_video_mvp_routes(app, deps: Dict[str, Any]):
                 status="rendering_video",
                 progress=85,
                 detail_message="正在调用 FFmpeg 合成运镜动效与硬字幕...",
+                metrics=metrics,
                 warnings=warnings[-20:],
             )
             video_file, render_warning = render_video(job_dir, storyboard, settings)
@@ -996,6 +1087,7 @@ def register_video_mvp_routes(app, deps: Dict[str, Any]):
                 progress=100,
                 detail_message="视频生成完成！已烧录中文字幕与镜头动效",
                 outputs=outputs,
+                metrics=metrics,
                 warnings=warnings[-20:],
                 error=None,
             )
@@ -1053,6 +1145,17 @@ def register_video_mvp_routes(app, deps: Dict[str, Any]):
                 "aspect_ratio": (data.get("aspect_ratio") or settings["aspect_ratio"]).strip() or settings["aspect_ratio"],
                 "image_model": get_openai_settings()["image_model"],
                 "image_density": (data.get("image_density") or "balanced").strip() or "balanced",
+            },
+            "metrics": {
+                "images_generated": 0,
+                "images_total": 0,
+                "images_ai_success": 0,
+                "prompt_tokens": 0,
+                "completion_tokens": 0,
+                "total_tokens": 0,
+                "total_characters": len(re.sub(r'\s+', '', text)),
+                "total_scenes": 0,
+                "total_duration_sec": 0.0,
             },
             "outputs": {
                 "storyboard_file": None,

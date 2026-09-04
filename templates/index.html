@@ -274,7 +274,10 @@
                             <label class="form-label" for="videoTextInput">文章内容</label>
                             <div class="text-input-wrapper">
                                 <textarea class="form-textarea" id="videoTextInput" rows="10" placeholder="输入要生成视频的文章内容。系统会先拆分分镜，再生成漫画图、配音和字幕。"></textarea>
-                                <div class="text-char-count" id="videoCharCount">0 字</div>
+                                <div class="text-char-count" style="margin-top:4px;font-size:12px;color:var(--gray-500)">
+                                    <span id="videoCharCount">0 字</span>
+                                    <span id="videoTokenEst" style="margin-left:8px"></span>
+                                </div>
                             </div>
                         </div>
 
@@ -332,6 +335,46 @@
                             <div class="progress-meta">
                                 <span id="videoJobStatusText">等待中...</span>
                                 <span id="videoJobProgressText">0%</span>
+                            </div>
+                        </div>
+
+                        <!-- 资产消耗状态看板 -->
+                        <div class="asset-metrics-panel" id="videoMetricsPanel">
+                            <div class="metrics-panel-title">
+                                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2v20M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/></svg>
+                                <span>资产消耗统计</span>
+                            </div>
+                            <div class="metrics-grid">
+                                <div class="metric-card">
+                                    <div class="metric-icon" style="background: rgba(37, 99, 235, 0.1); color: #2563eb;">
+                                        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/></svg>
+                                    </div>
+                                    <div class="metric-content">
+                                        <div class="metric-label">漫画生图消耗</div>
+                                        <div class="metric-val" id="metricImagesVal">0 张</div>
+                                        <div class="metric-sub" id="metricImagesSub">已生成 0 / 0 组画面</div>
+                                    </div>
+                                </div>
+                                <div class="metric-card">
+                                    <div class="metric-icon" style="background: rgba(16, 185, 129, 0.1); color: #10b981;">
+                                        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/><polyline points="3.27 6.96 12 12.01 20.73 6.96"/><line x1="12" y1="22.08" x2="12" y2="12"/></svg>
+                                    </div>
+                                    <div class="metric-content">
+                                        <div class="metric-label">大模型 Token 消耗</div>
+                                        <div class="metric-val" id="metricTokensVal">0 Tokens</div>
+                                        <div class="metric-sub" id="metricTokensSub">输入 0 / 输出 0</div>
+                                    </div>
+                                </div>
+                                <div class="metric-card">
+                                    <div class="metric-icon" style="background: rgba(245, 158, 11, 0.1); color: #f59e0b;">
+                                        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" y1="19" x2="12" y2="23"/><line x1="8" y1="23" x2="16" y2="23"/></svg>
+                                    </div>
+                                    <div class="metric-content">
+                                        <div class="metric-label">配音与分镜消耗</div>
+                                        <div class="metric-val" id="metricAudioVal">0 字</div>
+                                        <div class="metric-sub" id="metricAudioSub">共 0 个分镜 / 0 秒</div>
+                                    </div>
+                                </div>
                             </div>
                         </div>
                         <div class="video-warning-list hidden" id="videoWarnings"></div>
