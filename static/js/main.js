@@ -2608,3 +2608,25 @@ function copyAnimVideoLink() {
     });
 }
 
+function fillSampleAnimText() {
+    const sample = `欢迎体验全新的开源 AI 音视频创作神器！
+
+这是一款完全免费、开箱即用的音视频生产工具。无论你是自媒体博主、教程讲师还是开发者，无需昂贵的显卡，也不用购买付费 API，一键即可生成专业级高保真视听内容。
+
+系统深度集成了小米官方 MiMo TTS 全套高保真音色，不仅支持数十种预置音色，还内置独创的音色设计与声音克隆，只需一句话描述或几秒音频，专属人声即刻诞生。
+
+以往做视频，生图排队漫长、Token 费用昂贵、画面文字模糊畸变。而全新的文生动画功能，采用纯代码矢量流式压制，实现真正的 0 图像 Token 消耗，几十秒极速输出 1080P 超高清动画，字字锐利如矢量，毫厘毕现！
+
+上手更是极其简单：只需把你的文案脚本粘贴进来，大模型将自动拆解分镜，智能编排 8 大高质感科技动效，并并发合成配音。成片还支持一键极速换音，想换什么音色就换什么音色！
+
+全套项目代码已在 GitHub 完全开源免费，欢迎大家前往 Star 收藏支持！你在使用中有什么好点子或新需求？非常欢迎在评论区交流讨论！`;
+
+    const textarea = document.getElementById('animTextInput');
+    if (textarea) {
+        textarea.value = sample;
+        updateCounter('animTextInput', 'animCharCount', null);
+        showToast('已填入测试宣传文案（突出免费、易用与评论区交流）', 'info');
+    }
+}
+
+

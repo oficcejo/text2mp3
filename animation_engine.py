@@ -179,14 +179,14 @@ def draw_rounded_rect(draw: ImageDraw.ImageDraw, bbox: Tuple[int, int, int, int]
     radius = min(radius, (x2 - x1) // 2, (y2 - y1) // 2)
     draw.rounded_rectangle((x1, y1, x2, y2), radius=radius, fill=fill, outline=outline, width=width)
 
-def truncate_text(text: str, max_chars: int) -> str:
-    text = (text or "").strip()
+def truncate_text(text: Any, max_chars: int) -> str:
+    text = str(text if text is not None else "").strip()
     if len(text) <= max_chars:
         return text
     return text[:max_chars - 1] + "…"
 
-def wrap_text_to_lines(text: str, font: ImageFont.ImageFont, max_width: int) -> List[str]:
-    text = (text or "").strip()
+def wrap_text_to_lines(text: Any, font: ImageFont.ImageFont, max_width: int) -> List[str]:
+    text = str(text if text is not None else "").strip()
     if not text:
         return []
     lines = []
@@ -195,7 +195,7 @@ def wrap_text_to_lines(text: str, font: ImageFont.ImageFont, max_width: int) -> 
         for ch in paragraph:
             test_line = current_line + ch
             try:
-                w = font.getlength(test_line)
+                w = font.getlength(str(test_line))
             except Exception:
                 w = len(test_line) * 14
             if w <= max_width:
@@ -216,15 +216,25 @@ def wrap_text_to_lines(text: str, font: ImageFont.ImageFont, max_width: int) -> 
 def render_cards_grid(draw: ImageDraw.ImageDraw, scene: Dict[str, Any], progress: float, t: float,
                       theme: Dict[str, Any], W: int, H: int):
     content = scene.get("content", {})
-    cards = content.get("cards", [])
-    if not cards:
-        cards = [
+    raw_cards = content.get("cards", [])
+    if not raw_cards:
+        raw_cards = [
             {"title": "🌟 核心亮点", "desc": "高品质矢量动画，毫秒级音画同步", "badge": "极速"},
             {"title": "⚡ 纯代码压制", "desc": "零生图 Token 消耗，即开即用", "badge": "免费"},
             {"title": "🎙️ MiMo 官方音色", "desc": "深度集成全套官方、自设计与克隆音色", "badge": "高质"},
             {"title": "📐 智能分镜编排", "desc": "大语言模型结构化提炼，8 种视觉版式", "badge": "智能"}
         ]
     
+    cards = []
+    for i, c in enumerate(raw_cards):
+        if isinstance(c, dict):
+            badge = str(c.get("badge") if c.get("badge") is not None else f"0{i+1}")
+            title = str(c.get("title") or "")
+            desc = str(c.get("desc") or c.get("description") or "")
+            cards.append({"badge": badge, "title": title, "desc": desc})
+        else:
+            cards.append({"badge": f"0{i+1}", "title": str(c), "desc": ""})
+            
     num_cards = min(4, len(cards))
     start_y = int(H * 0.26)
     card_h = int(H * 0.17)
@@ -243,12 +253,12 @@ def render_cards_grid(draw: ImageDraw.ImageDraw, scene: Dict[str, Any], progress
             box = (int(W * 0.05) + slide_x, start_y + i * (card_h * 2 + gap_y), int(W * 0.95), start_y + i * (card_h * 2 + gap_y) + card_h * 2 - 20)
             draw_rounded_rect(draw, box, 18, fill=theme["card_bg"], outline=col, width=2)
             
-            badge = c.get("badge") or "HIGHLIGHT"
+            badge = str(c["badge"] or "HIGHLIGHT")
             draw_rounded_rect(draw, (box[0] + 30, box[1] + 30, box[0] + 160, box[1] + 70), 10, fill=(30, 45, 75), outline=col, width=1)
             draw.text((box[0] + 45, box[1] + 38), badge, fill=col, font=get_font(20, True))
             
-            draw.text((box[0] + 180, box[1] + 32), c.get("title", ""), fill=theme["text_main"], font=get_font(34, True))
-            desc_lines = wrap_text_to_lines(c.get("desc", ""), get_font(22, False), box[2] - box[0] - 60)
+            draw.text((box[0] + 180, box[1] + 32), c["title"], fill=theme["text_main"], font=get_font(34, True))
+            desc_lines = wrap_text_to_lines(c["desc"], get_font(22, False), box[2] - box[0] - 60)
             for di, dl in enumerate(desc_lines[:3]):
                 draw.text((box[0] + 35, box[1] + 95 + di * 36), dl, fill=theme["text_muted"], font=get_font(22, False))
     else:
@@ -271,13 +281,13 @@ def render_cards_grid(draw: ImageDraw.ImageDraw, scene: Dict[str, Any], progress
             
             draw_rounded_rect(draw, (bx1, by1, bx2, by2), 16, fill=theme["card_bg"], outline=col, width=2)
             
-            badge = c.get("badge", f"0{i+1}")
+            badge = str(c["badge"] or f"0{i+1}")
             bw = int(get_font(18, True).getlength(badge)) + 24
             draw_rounded_rect(draw, (bx1 + 25, by1 + 20, bx1 + 25 + bw, by1 + 52), 8, fill=(20, 35, 60), outline=col, width=1)
             draw.text((bx1 + 37, by1 + 24), badge, fill=col, font=get_font(18, True))
             
-            draw.text((bx1 + 35 + bw + 15, by1 + 22), truncate_text(c.get("title", ""), 22), fill=theme["text_main"], font=get_font(26, True))
-            desc_lines = wrap_text_to_lines(c.get("desc", ""), get_font(19, False), col_w - 50)
+            draw.text((bx1 + 35 + bw + 15, by1 + 22), truncate_text(c["title"], 22), fill=theme["text_main"], font=get_font(26, True))
+            desc_lines = wrap_text_to_lines(c["desc"], get_font(19, False), col_w - 50)
             for di, dl in enumerate(desc_lines[:2]):
                 draw.text((bx1 + 25, by1 + 68 + di * 30), dl, fill=theme["text_muted"], font=get_font(19, False))
 
@@ -285,12 +295,38 @@ def render_cards_grid(draw: ImageDraw.ImageDraw, scene: Dict[str, Any], progress
 def render_comparison(draw: ImageDraw.ImageDraw, scene: Dict[str, Any], progress: float, t: float,
                       theme: Dict[str, Any], W: int, H: int):
     content = scene.get("content", {})
-    left_title = content.get("left_title", "❌ 传统方案 (痛点多 / 门槛高)")
-    left_items = content.get("left_items", ["耗时漫长，生图排队等待", "调用昂贵大模型 API 费用飙升", "文字模糊易扭曲变形", "格式依赖复杂，极难二次编辑"])
     
-    right_title = content.get("right_title", "✅ 本项目创新方案 (极速 / 纯净)")
-    right_items = content.get("right_items", ["0 图像 Token 消耗，纯矢量代码渲染", "内置流式 FFmpeg，几十秒 1080P 成片", "字字锐利清晰，排版毫厘精准", "支持一键更换 MiMo 配音与分镜微调"])
-    
+    # 支持 content.left (dict) 与 content.left_title / content.left_items
+    left_data = content.get("left")
+    if isinstance(left_data, dict):
+        left_title = str(left_data.get("label") or left_data.get("title") or "❌ 传统方案 (痛点多 / 门槛高)")
+        raw_left_items = left_data.get("items", [])
+    else:
+        left_title = str(content.get("left_title") or "❌ 传统方案 (痛点多 / 门槛高)")
+        raw_left_items = content.get("left_items", ["耗时漫长，生图排队等待", "调用昂贵大模型 API 费用飙升", "文字模糊易扭曲变形", "格式依赖复杂，极难二次编辑"])
+        
+    left_items = []
+    for it in raw_left_items:
+        if isinstance(it, dict):
+            left_items.append(str(it.get("title") or it.get("text") or it.get("label") or it.get("desc") or ""))
+        else:
+            left_items.append(str(it))
+            
+    right_data = content.get("right")
+    if isinstance(right_data, dict):
+        right_title = str(right_data.get("label") or right_data.get("title") or "✅ 本项目创新方案 (极速 / 纯净)")
+        raw_right_items = right_data.get("items", [])
+    else:
+        right_title = str(content.get("right_title") or "✅ 本项目创新方案 (极速 / 纯净)")
+        raw_right_items = content.get("right_items", ["0 图像 Token 消耗，纯矢量代码渲染", "内置流式 FFmpeg，几十秒 1080P 成片", "字字锐利清晰，排版毫厘精准", "支持一键更换 MiMo 配音与分镜微调"])
+        
+    right_items = []
+    for it in raw_right_items:
+        if isinstance(it, dict):
+            right_items.append(str(it.get("title") or it.get("text") or it.get("label") or it.get("desc") or ""))
+        else:
+            right_items.append(str(it))
+            
     y_top = int(H * 0.25)
     box_h = int(H * 0.56)
     box_w = int((W * 0.9 - 30) / 2)
@@ -325,8 +361,30 @@ def render_comparison(draw: ImageDraw.ImageDraw, scene: Dict[str, Any], progress
 def render_data_chart(draw: ImageDraw.ImageDraw, scene: Dict[str, Any], progress: float, t: float,
                       theme: Dict[str, Any], W: int, H: int):
     content = scene.get("content", {})
-    chart_title = content.get("chart_title", "⚡ 动态趋势与数据分析监控流")
-    indicators = content.get("indicators", ["EMA20 动态跟踪", "波动率自适应通道", "AI 结构特征提取"])
+    chart_title = str(content.get("chart_title") or content.get("title") or content.get("metric") or "⚡ 动态趋势与数据分析监控流")
+    
+    indicators = []
+    raw_ind = content.get("indicators")
+    if raw_ind and isinstance(raw_ind, list):
+        for it in raw_ind:
+            if isinstance(it, dict):
+                indicators.append(str(it.get("label") or it.get("title") or it.get("name") or ""))
+            else:
+                indicators.append(str(it))
+    elif "callouts" in content and isinstance(content["callouts"], list):
+        for c in content["callouts"]:
+            if isinstance(c, dict):
+                indicators.append(f"{c.get('label', '')}: {c.get('value', '')}")
+            else:
+                indicators.append(str(c))
+    elif "series" in content and isinstance(content["series"], list):
+        for s in content["series"]:
+            if isinstance(s, dict):
+                indicators.append(f"{s.get('label', '')}: {s.get('value', '')} {s.get('unit', '')}".strip())
+            else:
+                indicators.append(str(s))
+    if not indicators:
+        indicators = ["EMA20 动态跟踪", "波动率自适应通道", "AI 结构特征提取"]
     
     y_top = int(H * 0.25)
     box_w = int(W * 0.9)
@@ -362,10 +420,10 @@ def render_data_chart(draw: ImageDraw.ImageDraw, scene: Dict[str, Any], progress
     for idx in range(len(ema_points) - 1):
         draw.line([ema_points[idx], ema_points[idx+1]], fill=theme["warning"], width=3)
         
-    ind_text = "  ●  ".join(indicators)
+    ind_text = "  ●  ".join(str(x) for x in indicators)
     draw.text((x1 + 40, y1 + int(box_h * 0.72)), f"● {ind_text}", fill=theme["warning"], font=get_font(20, False))
     
-    status_text = content.get("status_text", "🤖 智能引擎实时运算中：形态置信度 96.8%  ➔  最优策略自动匹配")
+    status_text = str(content.get("status_text") or "🤖 智能引擎实时运算中：形态置信度 96.8%  ➔  最优策略自动匹配")
     draw_rounded_rect(draw, (x1 + 35, y1 + int(box_h * 0.81), x2 - 35, y2 - 25), 12, fill=(20, 35, 58), outline=theme["primary"], width=1)
     draw.text((x1 + 60, y1 + int(box_h * 0.83)), status_text, fill=theme["primary"], font=get_font(22, True))
 
@@ -373,12 +431,26 @@ def render_data_chart(draw: ImageDraw.ImageDraw, scene: Dict[str, Any], progress
 def render_steps_flow(draw: ImageDraw.ImageDraw, scene: Dict[str, Any], progress: float, t: float,
                       theme: Dict[str, Any], W: int, H: int):
     content = scene.get("content", {})
-    steps = content.get("steps", [
-        {"step": "Step 1", "title": "文案输入", "desc": "输入长文或教程脚本，系统智能解析语义"},
-        {"step": "Step 2", "title": "结构化规划", "desc": "LLM 拆分分镜，自动匹配 8 大高质感矢量模板"},
-        {"step": "Step 3", "title": "MiMo 配音", "desc": "并发合成官方与克隆音色，精准计算毫秒时间轴"},
-        {"step": "Step 4", "title": "成片导出", "desc": "FFmpeg rawvideo 管道流式压制，1080P 秒级出片"}
-    ])
+    raw_steps = content.get("steps", [])
+    if not raw_steps:
+        raw_steps = [
+            {"step": "Step 1", "title": "文案输入", "desc": "输入长文或教程脚本，系统智能解析语义"},
+            {"step": "Step 2", "title": "结构化规划", "desc": "LLM 拆分分镜，自动匹配 8 大高质感矢量模板"},
+            {"step": "Step 3", "title": "MiMo 配音", "desc": "并发合成官方与克隆音色，精准计算毫秒时间轴"},
+            {"step": "Step 4", "title": "成片导出", "desc": "FFmpeg rawvideo 管道流式压制，1080P 秒级出片"}
+        ]
+        
+    steps = []
+    for i, st in enumerate(raw_steps):
+        if isinstance(st, dict):
+            badge = str(st.get("step") if st.get("step") is not None else f"0{i+1}")
+            if badge.isdigit():
+                badge = f"Step {badge}"
+            title = str(st.get("title") or "")
+            desc = str(st.get("desc") or st.get("description") or "")
+            steps.append({"badge": badge, "title": title, "desc": desc})
+        else:
+            steps.append({"badge": f"Step {i+1}", "title": str(st), "desc": ""})
     
     y_top = int(H * 0.26)
     box_w = int(W * 0.9)
@@ -402,14 +474,14 @@ def render_steps_flow(draw: ImageDraw.ImageDraw, scene: Dict[str, Any], progress
         
         draw_rounded_rect(draw, (sx1, sy1, sx2, sy2), 16, fill=theme["card_bg"], outline=col, width=2)
         
-        badge = st.get("step", f"0{i+1}")
+        badge = st["badge"]
         draw_rounded_rect(draw, (sx1 + 25, sy1 + 25, sx1 + 135, sy1 + 65), 10, fill=(24, 38, 64), outline=col, width=1)
-        draw.text((sx1 + 40, sy1 + 33), badge, fill=col, font=get_font(20, True))
+        draw.text((sx1 + 35, sy1 + 33), badge, fill=col, font=get_font(20, True))
         
-        draw.text((sx1 + 25, sy1 + 85), truncate_text(st.get("title", ""), 16), fill=theme["text_main"], font=get_font(28, True))
+        draw.text((sx1 + 25, sy1 + 85), truncate_text(st["title"], 16), fill=theme["text_main"], font=get_font(28, True))
         draw.line([(sx1 + 25, sy1 + 130), (sx2 - 25, sy1 + 130)], fill=theme["card_border"], width=1)
         
-        desc_lines = wrap_text_to_lines(st.get("desc", ""), get_font(19, False), step_w - 50)
+        desc_lines = wrap_text_to_lines(st["desc"], get_font(19, False), step_w - 50)
         for di, dl in enumerate(desc_lines[:6]):
             draw.text((sx1 + 25, sy1 + 150 + di * 32), dl, fill=theme["text_muted"], font=get_font(19, False))
             
@@ -422,13 +494,27 @@ def render_steps_flow(draw: ImageDraw.ImageDraw, scene: Dict[str, Any], progress
 def render_metrics_grid(draw: ImageDraw.ImageDraw, scene: Dict[str, Any], progress: float, t: float,
                         theme: Dict[str, Any], W: int, H: int):
     content = scene.get("content", {})
-    metrics = content.get("metrics", [
-        {"label": "生图 Token 消耗", "value": "0", "unit": "Tokens", "trend": "100% 免费"},
-        {"label": "1080P 渲染耗时", "value": "< 30s", "unit": "秒", "trend": "提升 15x"},
-        {"label": "文字排版清晰度", "value": "100%", "unit": "矢量保真", "trend": "无畸变"},
-        {"label": "MiMo 配音延迟", "value": "毫秒级", "unit": "实时对齐", "trend": "零爆音"}
-    ])
-    
+    raw_metrics = content.get("metrics", [])
+    if not raw_metrics:
+        raw_metrics = [
+            {"label": "生图 Token 消耗", "value": "0", "unit": "Tokens", "trend": "100% 免费"},
+            {"label": "1080P 渲染耗时", "value": "< 30s", "unit": "秒", "trend": "提升 15x"},
+            {"label": "文字排版清晰度", "value": "100%", "unit": "矢量保真", "trend": "无畸变"},
+            {"label": "MiMo 配音延迟", "value": "毫秒级", "unit": "实时对齐", "trend": "零爆音"}
+        ]
+        
+    metrics = []
+    for m in raw_metrics:
+        if isinstance(m, dict):
+            metrics.append({
+                "label": str(m.get("label") or m.get("name") or m.get("title") or ""),
+                "value": str(m.get("value") if m.get("value") is not None else ""),
+                "unit": str(m.get("unit") or ""),
+                "trend": str(m.get("trend") or m.get("accent") or "")
+            })
+        else:
+            metrics.append({"label": str(m), "value": "", "unit": "", "trend": ""})
+            
     y_top = int(H * 0.26)
     m_count = min(6, len(metrics))
     cols = 2 if m_count <= 4 else 3
@@ -457,29 +543,38 @@ def render_metrics_grid(draw: ImageDraw.ImageDraw, scene: Dict[str, Any], progre
         my2 = my1 + card_h
         
         draw_rounded_rect(draw, (mx1, my1, mx2, my2), 16, fill=theme["card_bg"], outline=col, width=2)
-        draw.text((mx1 + 25, my1 + 22), m.get("label", ""), fill=theme["text_muted"], font=get_font(20, False))
+        draw.text((mx1 + 25, my1 + 22), truncate_text(m["label"], 20), fill=theme["text_muted"], font=get_font(20, False))
         
-        val_str = str(m.get("value", ""))
+        val_str = truncate_text(m["value"], 12)
         draw.text((mx1 + 25, my1 + 56), val_str, fill=col, font=get_font(44, True))
         
-        unit_str = m.get("unit", "")
-        trend_str = m.get("trend", "")
+        unit_str = m["unit"]
+        trend_str = m["trend"]
         if unit_str or trend_str:
-            draw.text((mx1 + 25, my2 - 40), f"{unit_str}  ·  {trend_str}", fill=theme["text_main"], font=get_font(18, True))
+            tag_display = f"{unit_str}  ·  {trend_str}".strip(" ·")
+            draw.text((mx1 + 25, my2 - 40), tag_display, fill=theme["text_main"], font=get_font(18, True))
 
 # 6. code_terminal: 极客终端代码窗口 / 打字机高亮
 def render_code_terminal(draw: ImageDraw.ImageDraw, scene: Dict[str, Any], progress: float, t: float,
                          theme: Dict[str, Any], W: int, H: int):
     content = scene.get("content", {})
-    term_title = content.get("title", "bash - text2mp3 animation pipeline")
-    code_lines = content.get("lines", [
-        "$ python animation_mvp.py --model mimo-v2.5-tts --theme cyber_dark",
-        "[INFO] Initializing dynamic vector renderer (1920x1080 @ 30 FPS)...",
-        "[INFO] Synthesizing MiMo TTS voiceover for 6 storyboard scenes...",
-        "[SUCCESS] Zero image token cost! Video pipe stream connected to FFmpeg stdin.",
-        "[RENDER] 1080P animation generated successfully: output/animation.mp4"
-    ])
-    
+    term_title = str(content.get("title") or "bash - text2mp3 animation pipeline")
+    raw_lines = content.get("lines", [])
+    if not raw_lines:
+        raw_lines = [
+            "$ python animation_mvp.py --model mimo-v2.5-tts --theme cyber_dark",
+            "[INFO] Initializing dynamic vector renderer (1920x1080 @ 30 FPS)...",
+            "[INFO] Synthesizing MiMo TTS voiceover for 6 storyboard scenes...",
+            "[SUCCESS] Zero image token cost! Video pipe stream connected to FFmpeg stdin.",
+            "[RENDER] 1080P animation generated successfully: output/animation.mp4"
+        ]
+    code_lines = []
+    for l in raw_lines:
+        if isinstance(l, dict):
+            code_lines.append(str(l.get("code") or l.get("text") or l.get("line") or ""))
+        else:
+            code_lines.append(str(l))
+            
     y_top = int(H * 0.25)
     x1 = int(W * 0.05)
     x2 = int(W * 0.95)
@@ -529,10 +624,18 @@ def render_code_terminal(draw: ImageDraw.ImageDraw, scene: Dict[str, Any], progr
 def render_quote_focus(draw: ImageDraw.ImageDraw, scene: Dict[str, Any], progress: float, t: float,
                        theme: Dict[str, Any], W: int, H: int):
     content = scene.get("content", {})
-    quote_text = content.get("quote", "真正高生产力的 AI 工具，应当将计算成本与创作门槛降至零。")
-    author = content.get("author", "—— 开源项目愿景")
-    key_points = content.get("highlights", ["零生图开销", "极速出片", "超清矢量", "自由编排"])
+    quote_text = str(content.get("quote") or content.get("text") or "真正高生产力的 AI 工具，应当将计算成本与创作门槛降至零。")
+    author = str(content.get("author") or content.get("highlight") or "—— 开源项目愿景")
     
+    raw_points = content.get("highlights") or content.get("supporting_labels") or ["零生图开销", "极速出片", "超清矢量", "自由编排"]
+    key_points = []
+    if isinstance(raw_points, list):
+        for p in raw_points:
+            if isinstance(p, dict):
+                key_points.append(str(p.get("label") or p.get("title") or p.get("text") or ""))
+            else:
+                key_points.append(str(p))
+                
     y_top = int(H * 0.25)
     x1 = int(W * 0.08)
     x2 = int(W * 0.92)
@@ -555,18 +658,19 @@ def render_quote_focus(draw: ImageDraw.ImageDraw, scene: Dict[str, Any], progres
         tag_y = y2 + slide_y - 65
         tag_x = x1 + 50
         for tag in key_points[:4]:
-            tw = int(get_font(19, True).getlength(tag)) + 30
+            tag_str = str(tag)
+            tw = int(get_font(19, True).getlength(tag_str)) + 30
             draw_rounded_rect(draw, (tag_x, tag_y, tag_x + tw, tag_y + 42), 10, fill=(25, 38, 62), outline=theme["primary"], width=1)
-            draw.text((tag_x + 15, tag_y + 9), tag, fill=theme["primary"], font=get_font(19, True))
+            draw.text((tag_x + 15, tag_y + 9), tag_str, fill=theme["primary"], font=get_font(19, True))
             tag_x += tw + 20
 
 # 8. call_to_action: 尾声行动号召与开源项目引导 (去除B站信息，仅留GitHub与项目核心)
 def render_call_to_action(draw: ImageDraw.ImageDraw, scene: Dict[str, Any], progress: float, t: float,
                           theme: Dict[str, Any], W: int, H: int):
     content = scene.get("content", {})
-    action_title = content.get("title", "🚀 立即开启你的高质感动画创作之旅")
-    action_desc = content.get("desc", "开源免费 · 0 图像 Token · 纯代码压制 · MiMo 官方高保真配音")
-    github_url = content.get("github_url", "https://github.com/oficcejo/text2mp3")
+    action_title = str(content.get("title") or content.get("headline") or "🚀 立即开启你的高质感动画创作之旅")
+    action_desc = str(content.get("desc") or content.get("slogan") or content.get("description") or "开源免费 · 0 图像 Token · 纯代码压制 · MiMo 官方高保真配音")
+    github_url = str(content.get("github_url") or "https://github.com/oficcejo/text2mp3")
     
     y_top = int(H * 0.25)
     x1 = int(W * 0.08)
@@ -591,7 +695,8 @@ def render_call_to_action(draw: ImageDraw.ImageDraw, scene: Dict[str, Any], prog
     draw.text((gh_box[0] + 65, gh_box[1] + 25), "⭐ GitHub 开源项目 · 欢迎 Star 支持", fill=theme["accent"], font=get_font(24, True))
     draw.text((gh_box[0] + 65, gh_box[1] + 65), github_url, fill=theme["primary"], font=get_font(22, True))
     
-    draw.text((x1 + 60, y2 + slide_y - 50), "✨ 欢迎提 Issue 与 PR，一起打造更惊艳的开源 AI 视频工具！", fill=theme["text_muted"], font=get_font(20, False))
+    footer_msg = str(content.get("footer") or content.get("footer_msg") or "💬 欢迎在评论区交流讨论与提需求，欢迎去 GitHub 点个 Star 支持！")
+    draw.text((x1 + 60, y2 + slide_y - 50), footer_msg, fill=theme["text_muted"], font=get_font(20, False))
 
 # 调度分镜绘制映射表
 RENDER_MAP = {
@@ -633,9 +738,9 @@ def render_single_frame(t: float, scenes: List[Dict[str, Any]], total_duration: 
         draw.line([(0, y), (W, y)], fill=theme["grid_line"], width=1)
         
     # 2. 顶部标签与分镜主/副标题
-    stitle = cur_scene.get("title", "")
-    ssubtitle = cur_scene.get("subtitle", "")
-    stag = cur_scene.get("tag", "🌟 动态场景")
+    stitle = str(cur_scene.get("title") or "")
+    ssubtitle = str(cur_scene.get("subtitle") or "")
+    stag = str(cur_scene.get("tag") or "🌟 动态场景")
     
     tw = int(get_font(18, True).getlength(stag)) + 30
     draw_rounded_rect(draw, (int(W * 0.05), int(H * 0.04), int(W * 0.05) + tw, int(H * 0.04) + 38), 10,
@@ -674,7 +779,7 @@ def render_single_frame(t: float, scenes: List[Dict[str, Any]], total_duration: 
     draw.text((gh_box[0] + 110, gh_box[1] + 9), "https://github.com/oficcejo/text2mp3", fill=theme["primary"], font=get_font(17, True))
 
     # 6. 底部半透明字幕胶囊
-    narration = cur_scene.get("narration_text") or cur_scene.get("text") or ""
+    narration = str(cur_scene.get("narration_text") or cur_scene.get("text") or "")
     if narration:
         sub_h = int(H * 0.1)
         sub_box = (int(W * 0.05), H - sub_h - 25, int(W * 0.95), H - 25)

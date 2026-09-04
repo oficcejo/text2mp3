@@ -511,7 +511,14 @@ def register_animation_mvp_routes(app, deps: Dict[str, Any]):
             "data_chart (数据图表与走势), steps_flow (步骤向导 1->2->3), metrics_grid (核心指标仪表盘), "
             "code_terminal (代码终端窗口), quote_focus (金句观点聚焦), call_to_action (尾声行动呼吁，仅限 GitHub 与开源口号，严禁包含 B 站信息)；\n"
             "3. 为每个分镜生成简短主标题 title (10~18 字)、副标题 subtitle (15~28 字)、胶囊标签 tag (4~8 字) 以及匹配该类型的 content 对象；\n"
-            "4. 输出格式必须为纯 JSON 数组，包含对象的字段：scene_index, title, subtitle, tag, type, content, narration_text。"
+            "4. content 字段规范（注意所有标签和序号必须是字符串）：\n"
+            "   - steps_flow: 必须包含 steps 列表，每个元素形如 {\"step\": \"Step 1\", \"title\": \"...\", \"desc\": \"...\"}（step 必须为字符串）；\n"
+            "   - comparison: 包含 left_title, left_items (字符串数组), right_title, right_items (字符串数组)；\n"
+            "   - cards_grid: 包含 cards 列表，每个元素形如 {\"badge\": \"01\", \"title\": \"...\", \"desc\": \"...\"}；\n"
+            "   - metrics_grid: 包含 metrics 列表，每个元素形如 {\"label\": \"...\", \"value\": \"...\", \"unit\": \"...\", \"trend\": \"...\"}；\n"
+            "   - quote_focus: 包含 quote, author, highlights (字符串数组)；\n"
+            "   - call_to_action: 包含 title, desc, github_url (\"https://github.com/oficcejo/text2mp3\"), footer (\"💬 欢迎在评论区交流讨论与提需求，欢迎去 GitHub 点个 Star 支持！\")；\n"
+            "5. 输出格式必须为纯 JSON 数组，包含对象的字段：scene_index, title, subtitle, tag, type, content, narration_text。"
         )
 
         user_input_items = [{"scene_index": i, "narration_text": chunk} for i, chunk in enumerate(chunks, 1)]

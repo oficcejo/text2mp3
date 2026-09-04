@@ -547,7 +547,10 @@
                 <div class="card">
                     <div class="card-body">
                         <div class="form-group">
-                            <label class="form-label" for="animTextInput">文章 / 脚本内容</label>
+                            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;">
+                                <label class="form-label" for="animTextInput" style="margin-bottom:0;">文章 / 脚本内容</label>
+                                <button type="button" class="btn btn-sm btn-secondary" onclick="fillSampleAnimText()" style="padding:2px 10px;font-size:12px;">📋 填入示例宣传文案</button>
+                            </div>
                             <div class="text-input-wrapper">
                                 <textarea class="form-textarea" id="animTextInput" rows="9" placeholder="输入要制作动态矢量动画的文章、教程、产品发布文案或演说脚本...&#10;系统将自动解析语义，智能匹配卡片矩阵、对比面板、走势图表、步骤向导、指标网格等 8 大科技动效，并使用 MiMo 官方高保真音色配音！"></textarea>
                                 <div class="text-char-count" style="margin-top:4px;font-size:12px;color:var(--gray-500)">
