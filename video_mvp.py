@@ -13,6 +13,7 @@ import struct
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import requests
 import soundfile as sf
@@ -594,34 +595,56 @@ def register_video_mvp_routes(app, deps: Dict[str, Any]):
         part_paths: List[Path] = []
 
         try:
+            w = int(settings.get("width", 1280))
+            h = int(settings.get("height", 720))
+            fps = int(settings.get("fps", 24))
+            zoom_vf = (
+                f"scale={w}:{h}:force_original_aspect_ratio=increase,crop={w}:{h},"
+                f"zoompan=z='min(zoom+0.0006,1.06)':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d=1:s={w}x{h}:fps={fps}"
+            )
+
             for scene in storyboard["scenes"]:
                 frame_path = job_dir / scene["frame_file"]
                 audio_path = job_dir / scene["audio_file"]
                 part_path = parts_dir / f"scene_{scene['scene_index']:03d}.mp4"
                 duration = max(1.0, float(scene.get("actual_duration_sec") or scene["estimated_duration_sec"]))
+                
+                # 尝试带微运镜效果生成片段
                 cmd = [
                     ffmpeg,
                     "-y",
-                    "-loop",
-                    "1",
-                    "-i",
-                    str(frame_path),
-                    "-i",
-                    str(audio_path),
-                    "-t",
-                    f"{duration:.2f}",
-                    "-r",
-                    str(settings["fps"]),
-                    "-c:v",
-                    "libx264",
-                    "-pix_fmt",
-                    "yuv420p",
-                    "-c:a",
-                    "aac",
+                    "-loop", "1",
+                    "-i", str(frame_path),
+                    "-i", str(audio_path),
+                    "-t", f"{duration:.2f}",
+                    "-vf", zoom_vf,
+                    "-r", str(fps),
+                    "-c:v", "libx264",
+                    "-pix_fmt", "yuv420p",
+                    "-c:a", "aac",
                     "-shortest",
                     str(part_path),
                 ]
-                subprocess.run(cmd, check=True, capture_output=True)
+                try:
+                    subprocess.run(cmd, check=True, capture_output=True)
+                except subprocess.CalledProcessError:
+                    # 运镜滤镜兜底回退为普通静态生成
+                    cmd_fallback = [
+                        ffmpeg,
+                        "-y",
+                        "-loop", "1",
+                        "-i", str(frame_path),
+                        "-i", str(audio_path),
+                        "-t", f"{duration:.2f}",
+                        "-r", str(fps),
+                        "-c:v", "libx264",
+                        "-pix_fmt", "yuv420p",
+                        "-c:a", "aac",
+                        "-shortest",
+                        str(part_path),
+                    ]
+                    subprocess.run(cmd_fallback, check=True, capture_output=True)
+
                 part_paths.append(part_path)
 
             concat_lines = []
@@ -629,39 +652,64 @@ def register_video_mvp_routes(app, deps: Dict[str, Any]):
                 part_abs = str(part.resolve()).replace("\\", "/")
                 concat_lines.append(f"file '{part_abs}'")
             concat_file.write_text("\n".join(concat_lines), encoding="utf-8")
+            
+            final_raw_path = job_dir / "video" / "final_raw.mp4"
             final_path = job_dir / "video" / "final.mp4"
 
-            cmd = [
+            # 第一步：快速拼接视频流
+            cmd_concat = [
                 ffmpeg,
                 "-y",
-                "-f",
-                "concat",
-                "-safe",
-                "0",
-                "-i",
-                str(concat_file),
-                "-c",
-                "copy",
-                str(final_path),
+                "-f", "concat",
+                "-safe", "0",
+                "-i", str(concat_file),
+                "-c", "copy",
+                str(final_raw_path),
             ]
-            result = subprocess.run(cmd, capture_output=True)
+            result = subprocess.run(cmd_concat, capture_output=True)
             if result.returncode != 0:
-                cmd = [
+                cmd_concat_reencode = [
                     ffmpeg,
                     "-y",
-                    "-f",
-                    "concat",
-                    "-safe",
-                    "0",
-                    "-i",
-                    str(concat_file),
-                    "-c:v",
-                    "libx264",
-                    "-c:a",
-                    "aac",
-                    str(final_path),
+                    "-f", "concat",
+                    "-safe", "0",
+                    "-i", str(concat_file),
+                    "-c:v", "libx264",
+                    "-c:a", "aac",
+                    str(final_raw_path),
                 ]
-                subprocess.run(cmd, check=True, capture_output=True)
+                subprocess.run(cmd_concat_reencode, check=True, capture_output=True)
+
+            # 第二步：自动硬烧录中文字幕
+            srt_path = job_dir / "subtitles" / "subtitles.srt"
+            burned_subtitles = False
+
+            if srt_path.exists() and srt_path.stat().st_size > 0:
+                try:
+                    srt_escaped = str(srt_path.resolve()).replace("\\", "/").replace(":", "\\:")
+                    sub_vf = f"subtitles='{srt_escaped}':force_style='FontName=Microsoft YaHei,FontSize=22,PrimaryColour=&H00FFFFFF,OutlineColour=&H00000000,BorderStyle=1,Outline=2.5,Shadow=1.2,MarginV=26,Alignment=2'"
+                    cmd_burn = [
+                        ffmpeg,
+                        "-y",
+                        "-i", str(final_raw_path),
+                        "-vf", sub_vf,
+                        "-c:v", "libx264",
+                        "-pix_fmt", "yuv420p",
+                        "-c:a", "copy",
+                        str(final_path),
+                    ]
+                    res_burn = subprocess.run(cmd_burn, capture_output=True)
+                    if res_burn.returncode == 0:
+                        burned_subtitles = True
+                        final_raw_path.unlink(missing_ok=True)
+                except Exception as _sub_err:
+                    print(f"烧录字幕异常，保留原视频: {_sub_err}", flush=True)
+
+            if not burned_subtitles:
+                if final_raw_path.exists():
+                    if final_path.exists():
+                        final_path.unlink(missing_ok=True)
+                    final_raw_path.rename(final_path)
 
             return str(final_path.relative_to(job_dir)).replace("\\", "/"), None
         except Exception as exc:
@@ -687,6 +735,7 @@ def register_video_mvp_routes(app, deps: Dict[str, Any]):
             "job_id": job_id,
             "status": manifest.get("status"),
             "progress": manifest.get("progress", 0),
+            "detail_message": manifest.get("detail_message", ""),
             "error": manifest.get("error"),
             "warnings": manifest.get("warnings", []),
             "created_at": manifest.get("created_at"),
@@ -724,30 +773,88 @@ def register_video_mvp_routes(app, deps: Dict[str, Any]):
         warnings = list(manifest.get("warnings", []))
 
         try:
-            update_manifest(job_dir, status="planning", progress=8, error=None)
+            update_manifest(job_dir, status="planning", progress=8, detail_message="大模型正在智能拆解故事分镜...", error=None)
             storyboard = build_storyboard(manifest["source_text"], settings)
             json_write(job_dir / "storyboard.json", storyboard)
-            update_manifest(job_dir, status="generating_assets", progress=20)
 
-            total = max(1, len(storyboard["scenes"]))
+            total_scenes = max(1, len(storyboard["scenes"]))
             image_groups = build_image_groups(storyboard["scenes"], settings)
+            num_groups = max(1, len(image_groups))
+
+            update_manifest(
+                job_dir,
+                status="generating_assets",
+                progress=20,
+                detail_message=f"正在并发生成 {num_groups} 组漫画图...",
+            )
+
+            # 1. 多线程并发生成漫画画面
+            group_results = {}
+            with ThreadPoolExecutor(max_workers=min(3, num_groups)) as img_executor:
+                future_to_group = {
+                    img_executor.submit(generate_group_image, g_idx, g_scenes, job_dir, settings): g_idx
+                    for g_idx, g_scenes in enumerate(image_groups, start=1)
+                }
+                done_groups = 0
+                for future in as_completed(future_to_group):
+                    g_idx = future_to_group[future]
+                    img_file = future.result()
+                    group_results[g_idx] = img_file
+                    done_groups += 1
+                    pct = 20 + int(25 * done_groups / num_groups)
+                    update_manifest(
+                        job_dir,
+                        status="generating_assets",
+                        progress=pct,
+                        detail_message=f"漫画画面生成中 ({done_groups}/{num_groups})...",
+                    )
+
+            # 建立 scene_index 到 image_file 的关联
             group_map = {}
             for group_index, group_scenes in enumerate(image_groups, start=1):
-                image_file = generate_group_image(group_index, group_scenes, job_dir, settings)
+                image_file = group_results.get(group_index)
                 for scene in group_scenes:
                     scene["image_group_index"] = group_index
                     scene["image_file"] = image_file
                     group_map[scene["scene_index"]] = image_file
 
-            cursor = 0.0
-            for idx, scene in enumerate(storyboard["scenes"], start=1):
+            # 2. 为各分镜生成画格
+            for scene in storyboard["scenes"]:
                 scene["frame_file"] = generate_scene_frame(scene, group_map[scene["scene_index"]], job_dir, settings)
 
-                audio_file, actual_duration_sec, warning = generate_scene_audio(
-                    scene=scene,
-                    job_dir=job_dir,
-                    voice=config.get("voice", settings["voice"]),
-                )
+            # 3. 多线程并发合成各分镜配音音频
+            voice_choice = config.get("voice", settings["voice"])
+            update_manifest(
+                job_dir,
+                status="generating_assets",
+                progress=46,
+                detail_message=f"正在并发合成 {total_scenes} 个分镜配音...",
+            )
+
+            audio_results = {}
+            with ThreadPoolExecutor(max_workers=min(4, total_scenes)) as audio_executor:
+                future_to_scene = {
+                    audio_executor.submit(generate_scene_audio, scene, job_dir, voice_choice): scene
+                    for scene in storyboard["scenes"]
+                }
+                done_audios = 0
+                for future in as_completed(future_to_scene):
+                    sc = future_to_scene[future]
+                    audio_file, actual_duration_sec, warning = future.result()
+                    audio_results[sc["scene_index"]] = (audio_file, actual_duration_sec, warning)
+                    done_audios += 1
+                    pct = 46 + int(30 * done_audios / total_scenes)
+                    update_manifest(
+                        job_dir,
+                        status="generating_assets",
+                        progress=pct,
+                        detail_message=f"分镜配音合成中 ({done_audios}/{total_scenes})...",
+                    )
+
+            # 4. 按顺序对齐配音时长与时间轴
+            cursor = 0.0
+            for idx, scene in enumerate(storyboard["scenes"], start=1):
+                audio_file, actual_duration_sec, warning = audio_results[scene["scene_index"]]
                 scene["audio_file"] = audio_file
                 scene["actual_duration_sec"] = actual_duration_sec
                 scene["start_sec"] = round(cursor, 2)
@@ -756,23 +863,26 @@ def register_video_mvp_routes(app, deps: Dict[str, Any]):
                 if warning:
                     warnings.append(f"Scene {idx}: {warning}")
 
-                progress = 20 + int(55 * idx / total)
-                update_manifest(
-                    job_dir,
-                    status="generating_assets",
-                    progress=progress,
-                    warnings=warnings[-20:],
-                )
-                json_write(job_dir / "storyboard.json", storyboard)
-
             storyboard["total_estimated_duration_sec"] = round(cursor, 1)
             json_write(job_dir / "storyboard.json", storyboard)
 
-            update_manifest(job_dir, status="building_subtitles", progress=80, warnings=warnings[-20:])
+            update_manifest(
+                job_dir,
+                status="building_subtitles",
+                progress=78,
+                detail_message="正在构建精准时间轴字幕...",
+                warnings=warnings[-20:],
+            )
             subtitle_file = job_dir / "subtitles" / "subtitles.srt"
             build_srt(storyboard, subtitle_file)
 
-            update_manifest(job_dir, status="rendering_video", progress=88, warnings=warnings[-20:])
+            update_manifest(
+                job_dir,
+                status="rendering_video",
+                progress=85,
+                detail_message="正在调用 FFmpeg 合成运镜动效与硬字幕...",
+                warnings=warnings[-20:],
+            )
             video_file, render_warning = render_video(job_dir, storyboard, settings)
             if render_warning:
                 warnings.append(render_warning)
@@ -787,6 +897,7 @@ def register_video_mvp_routes(app, deps: Dict[str, Any]):
                 job_dir,
                 status="completed",
                 progress=100,
+                detail_message="视频生成完成！已烧录中文字幕与镜头动效",
                 outputs=outputs,
                 warnings=warnings[-20:],
                 error=None,

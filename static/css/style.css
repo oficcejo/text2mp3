@@ -1054,3 +1054,112 @@ a:hover { color: var(--blue-700); }
     flex-direction: column;
   }
 }
+
+/* ============================================================
+   Inline Progress Indicator
+   ============================================================ */
+.inline-progress-card {
+  margin-top: 14px;
+  padding: 12px 16px;
+  background: var(--blue-50, #eff6ff);
+  border: 1px solid var(--blue-200, #bfdbfe);
+  border-radius: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  animation: fadeIn .2s ease;
+}
+
+.inline-progress-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: 13px;
+}
+
+.inline-progress-status {
+  color: var(--blue-700, #1d4ed8);
+  font-weight: 500;
+}
+
+.inline-progress-meta {
+  color: var(--blue-600, #2563eb);
+  font-variant-numeric: tabular-nums;
+  font-size: 12px;
+}
+
+/* ============================================================
+   Cloned Voice Item & Preview
+   ============================================================ */
+.cloned-voice-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--border-color, #e2e8f0);
+  border-radius: var(--radius-sm, 6px);
+  transition: background .2s ease, border-color .2s ease;
+  cursor: pointer;
+}
+
+.cloned-voice-item:hover {
+  background: var(--gray-50, #f8fafc);
+}
+
+.cloned-voice-item.playing {
+  background: var(--blue-50, #eff6ff);
+  border-color: var(--blue-200, #bfdbfe);
+}
+
+.voice-info-left {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.voice-name {
+  font-weight: 500;
+  color: var(--gray-800, #1e293b);
+  font-size: 14px;
+}
+
+.voice-meta {
+  font-size: 12px;
+  color: var(--gray-400, #94a3b8);
+  margin-top: 2px;
+}
+
+.voice-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.btn-sm {
+  padding: 6px 12px;
+  font-size: 12px;
+  height: 32px;
+}
+
+.btn-preview-voice-round {
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  background: var(--gray-100, #f1f5f9);
+  color: var(--gray-600, #475569);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  transition: all .2s ease;
+  border: none;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+
+.btn-preview-voice-round:hover,
+.cloned-voice-item.playing .btn-preview-voice-round {
+  background: var(--blue-600, #2563eb);
+  color: white;
+}
+
+

@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>小米 MiMo TTS - 文字转语音</title>
-    <link rel="stylesheet" href="/static/css/style.css">
+    <link rel="stylesheet" href="/static/css/style.css?v=2.3">
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link href="https://fonts.googleapis.com/css2?family=Inter:opsz,wght@14..32,400;14..32,500;14..32,600;14..32,700&display=swap" rel="stylesheet">
 </head>
@@ -156,6 +156,19 @@
                             <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="5 3 19 12 5 21 5 3"/></svg>
                             生成语音
                         </button>
+
+                        <!-- 即时内联进度提示条 -->
+                        <div class="inline-progress-card hidden" id="inlineProgressCard">
+                            <div class="inline-progress-header">
+                                <span class="inline-progress-status" id="inlineProgressMessage">正在准备...</span>
+                                <span class="inline-progress-meta">
+                                    <span id="inlineProgressTimer">0s</span> · <strong id="inlineProgressPercent">0%</strong>
+                                </span>
+                            </div>
+                            <div class="progress-bar-track">
+                                <div class="progress-bar-fill" id="inlineProgressBarFill"></div>
+                            </div>
+                        </div>
                     </div>
                 </div>
 
@@ -421,6 +434,19 @@
                             <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="5 3 19 12 5 21 5 3"/></svg>
                             开始克隆 & 合成
                         </button>
+
+                        <!-- 即时内联进度提示条 -->
+                        <div class="inline-progress-card hidden" id="cloneInlineProgressCard">
+                            <div class="inline-progress-header">
+                                <span class="inline-progress-status" id="cloneInlineProgressMessage">正在准备...</span>
+                                <span class="inline-progress-meta">
+                                    <span id="cloneInlineProgressTimer">0s</span> · <strong id="cloneInlineProgressPercent">0%</strong>
+                                </span>
+                            </div>
+                            <div class="progress-bar-track">
+                                <div class="progress-bar-fill" id="cloneInlineProgressBarFill"></div>
+                            </div>
+                        </div>
                     </div>
                 </div>
 
@@ -450,6 +476,13 @@
                     <div class="card-body">
                         <div id="clonedVoicesList">
                             <div class="empty-state" id="emptyClonedVoices">
+                                <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="12" cy="12" r="10"/><path d="M12 8v4"/><path d="M12 16h.01"/></svg>
+                                <p>暂无保存的克隆音色</p>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
                 <div class="progress-overlay hidden" id="cloneProgressOverlay">
                     <div class="progress-panel">
                         <div class="progress-header">
@@ -519,6 +552,6 @@
     <!-- Toast -->
     <div class="toast-container" id="toastContainer"></div>
 
-    <script src="/static/js/main.js"></script>
+    <script src="/static/js/main.js?v=2.3"></script>
 </body>
 </html>

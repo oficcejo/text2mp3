@@ -105,6 +105,9 @@ function setupTabSwitching() {
 
             if (tab === 'voiceclone') {
                 loadClonedVoicesList();
+            } else if (tab === 'video') {
+                loadVideoConfig();
+                updateVideoVoiceList();
             }
         });
     });
@@ -247,14 +250,45 @@ async function updateVideoVoiceList() {
 // 进度面板通用逻辑
 // ============================================================
 
-function startTimer(elementId) {
+function getProgressEl(suffix, prefix = '') {
+    const p = prefix ? prefix : '';
+    if (!p) {
+        return document.getElementById('progress' + suffix) ||
+               document.getElementById('Progress' + suffix) ||
+               document.getElementById(suffix.toLowerCase());
+    }
+    return document.getElementById(p + 'Progress' + suffix) ||
+           document.getElementById(p + 'progress' + suffix);
+}
+
+function getProgressOverlayEl(prefix = '') {
+    if (!prefix) {
+        return document.getElementById('progressOverlay') || document.getElementById('ProgressOverlay');
+    }
+    return document.getElementById(prefix + 'ProgressOverlay') || document.getElementById(prefix + 'progressOverlay');
+}
+
+function getInlineProgressCard(prefix = '') {
+    if (!prefix) {
+        return document.getElementById('inlineProgressCard');
+    }
+    return document.getElementById(prefix + 'InlineProgressCard');
+}
+
+function startTimer(prefix = '') {
     startTime = Date.now();
-    const el = document.getElementById(elementId);
+    const timerOverlay = getProgressEl('Timer', prefix);
+    const inlineTimerId = prefix ? `${prefix}InlineProgressTimer` : 'inlineProgressTimer';
+    const timerInline = document.getElementById(inlineTimerId);
+
+    if (timerInterval) clearInterval(timerInterval);
     timerInterval = setInterval(() => {
         const elapsed = Math.floor((Date.now() - startTime) / 1000);
         const m = Math.floor(elapsed / 60);
         const s = elapsed % 60;
-        el.textContent = m > 0 ? `${m}m${s}s` : `${s}s`;
+        const timeStr = m > 0 ? `${m}m${s}s` : `${s}s`;
+        if (timerOverlay) timerOverlay.textContent = timeStr;
+        if (timerInline) timerInline.textContent = timeStr;
     }, 200);
 }
 
@@ -268,78 +302,105 @@ function stopTimer() {
 function updateProgressUI(event, prefix = '') {
     const data = JSON.parse(event.data);
     const stage = data.stage;
-    const progress = data.progress;
-    const message = data.message;
+    const progress = data.progress || 0;
+    const message = data.message || '';
 
-    // 更新进度条
-    const fill = document.getElementById(prefix + 'ProgressBarFill');
-    const percent = document.getElementById(prefix + 'ProgressPercent');
-    const msg = document.getElementById(prefix + 'ProgressMessage');
+    // 1. 更新模态浮层
+    const fill = getProgressEl('BarFill', prefix);
+    const percent = getProgressEl('Percent', prefix);
+    const msg = getProgressEl('Message', prefix);
 
     if (fill) fill.style.width = progress + '%';
     if (percent) percent.textContent = progress + '%';
-
     if (msg) {
         msg.textContent = message;
-        msg.className = 'progress-message';
+        msg.className = 'progress-message' + (stage === 'error' ? ' error' : (stage === 'complete' ? ' success' : ''));
     }
 
-    // 更新阶段指示器
+    // 2. 更新内联进度条
+    const inlineCard = getInlineProgressCard(prefix);
+    if (inlineCard) {
+        inlineCard.classList.remove('hidden');
+        const inlineFill = document.getElementById(prefix ? `${prefix}InlineProgressBarFill` : 'inlineProgressBarFill');
+        const inlinePercent = document.getElementById(prefix ? `${prefix}InlineProgressPercent` : 'inlineProgressPercent');
+        const inlineMsg = document.getElementById(prefix ? `${prefix}InlineProgressMessage` : 'inlineProgressMessage');
+        if (inlineFill) inlineFill.style.width = progress + '%';
+        if (inlinePercent) inlinePercent.textContent = progress + '%';
+        if (inlineMsg) inlineMsg.textContent = message;
+    }
+
+    // 3. 更新按钮文字提示
+    const btnId = prefix === 'clone' ? 'cloneBtn' : 'synthesizeBtn';
+    const actionBtn = document.getElementById(btnId);
+    if (actionBtn && stage !== 'complete' && stage !== 'error') {
+        actionBtn.textContent = `${prefix === 'clone' ? '克隆中' : '合成中'} ${progress}%...`;
+    }
+
+    // 4. 更新阶段指示器
     const allStages = ['preparing', 'connecting', 'generating', 'processing', 'complete'];
-    const stageOrder = ['preparing', 'connecting', 'generating', 'processing', 'complete'];
-    const currentIdx = stageOrder.indexOf(stage);
+    const currentIdx = allStages.indexOf(stage);
+    const overlay = getProgressOverlayEl(prefix);
 
-    document.querySelectorAll(`#${prefix}ProgressOverlay .stage-item`).forEach(item => {
-        const s = item.dataset.stage;
-        const sIdx = stageOrder.indexOf(s);
+    if (overlay) {
+        overlay.querySelectorAll('.stage-item').forEach(item => {
+            const s = item.dataset.stage;
+            const sIdx = allStages.indexOf(s);
+            item.classList.remove('active', 'done', 'error');
 
-        item.classList.remove('active', 'done', 'error');
-
-        if (stage === 'error') {
-            item.classList.add('error');
-        } else if (sIdx < currentIdx) {
-            item.classList.add('done');
-        } else if (sIdx === currentIdx) {
-            item.classList.add('active');
-            // 完成后不要脉冲动画
-            if (stage === 'complete') {
-                item.classList.remove('active');
+            if (stage === 'error') {
+                item.classList.add('error');
+            } else if (sIdx < currentIdx) {
                 item.classList.add('done');
+            } else if (sIdx === currentIdx) {
+                item.classList.add('active');
+                if (stage === 'complete') {
+                    item.classList.remove('active');
+                    item.classList.add('done');
+                }
             }
-        }
-    });
+        });
 
-    // 更新连接线
-    document.querySelectorAll(`#${prefix}ProgressOverlay .stage-connector`).forEach((conn, i) => {
-        conn.classList.remove('active', 'done');
-        if (stage === 'error') return;
-        if (i < currentIdx) {
-            conn.classList.add('done');
-        } else if (i === currentIdx && stage !== 'complete') {
-            conn.classList.add('active');
-        } else if (i < currentIdx || (stage === 'complete' && i < allStages.length - 1)) {
-            conn.classList.add('done');
-        }
-    });
+        overlay.querySelectorAll('.stage-connector').forEach((conn, i) => {
+            conn.classList.remove('active', 'done');
+            if (stage === 'error') return;
+            if (i < currentIdx) {
+                conn.classList.add('done');
+            } else if (i === currentIdx && stage !== 'complete') {
+                conn.classList.add('active');
+            } else if (i < currentIdx || (stage === 'complete' && i < allStages.length - 1)) {
+                conn.classList.add('done');
+            }
+        });
+    }
 
     if (stage === 'error') {
-        if (msg) msg.className = 'progress-message error';
         stopTimer();
-        setTimeout(function() {
+        if (actionBtn) {
+            actionBtn.disabled = false;
+            actionBtn.innerHTML = prefix === 'clone'
+                ? `<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="5 3 19 12 5 21 5 3"/></svg> 开始克隆 & 合成`
+                : `<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="5 3 19 12 5 21 5 3"/></svg> 生成语音`;
+        }
+        showToast(message || '合成失败', 'error');
+        setTimeout(() => {
             hideProgress(prefix);
         }, 5000);
     }
 
     if (stage === 'complete') {
-        if (msg) msg.className = 'progress-message success';
         stopTimer();
         currentEventSource = null;
 
-        // 延迟关闭进度面板
+        if (actionBtn) {
+            actionBtn.disabled = false;
+            actionBtn.innerHTML = prefix === 'clone'
+                ? `<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="5 3 19 12 5 21 5 3"/></svg> 开始克隆 & 合成`
+                : `<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="5 3 19 12 5 21 5 3"/></svg> 生成语音`;
+        }
+
         setTimeout(() => {
             hideProgress(prefix);
 
-            // 显示结果
             if (data.file_url) {
                 const playerId = prefix === 'clone' ? 'cloneAudioPlayer' : 'audioPlayer';
                 const downloadId = prefix === 'clone' ? 'cloneDownloadBtn' : 'downloadBtn';
@@ -347,14 +408,21 @@ function updateProgressUI(event, prefix = '') {
 
                 const player = document.getElementById(playerId);
                 const download = document.getElementById(downloadId);
-                player.src = data.file_url;
-                player.load();
-                player.play().catch(() => {});
-                download.href = data.file_url;
-                download.download = data.file_url.split('/').pop();
+                if (player) {
+                    player.src = data.file_url;
+                    player.load();
+                    player.play().catch(() => {});
+                }
+                if (download) {
+                    download.href = data.file_url;
+                    download.download = data.file_url.split('/').pop();
+                }
 
-                document.getElementById(resultId).classList.remove('hidden');
-                document.getElementById(resultId).scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+                const resCard = document.getElementById(resultId);
+                if (resCard) {
+                    resCard.classList.remove('hidden');
+                    resCard.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+                }
 
                 loadHistory();
                 loadClonedVoicesList();
@@ -365,35 +433,53 @@ function updateProgressUI(event, prefix = '') {
 }
 
 function showProgress(prefix = '') {
-    const overlay = document.getElementById(prefix + 'ProgressOverlay');
+    const overlay = getProgressOverlayEl(prefix);
     if (overlay) {
         overlay.classList.remove('hidden');
 
-        // 重置 UI
-        const fill = document.getElementById(prefix + 'ProgressBarFill');
-        const percent = document.getElementById(prefix + 'ProgressPercent');
-        const msg = document.getElementById(prefix + 'ProgressMessage');
-        const timer = document.getElementById(prefix + 'ProgressTimer');
+        // 重置浮层 UI
+        const fill = getProgressEl('BarFill', prefix);
+        const percent = getProgressEl('Percent', prefix);
+        const msg = getProgressEl('Message', prefix);
+        const timer = getProgressEl('Timer', prefix);
         if (fill) fill.style.width = '0%';
         if (percent) percent.textContent = '0%';
         if (msg) { msg.textContent = '正在准备...'; msg.className = 'progress-message'; }
         if (timer) timer.textContent = '0s';
 
         // 重置阶段状态
-        document.querySelectorAll(`#${prefix}ProgressOverlay .stage-item`).forEach(item => {
+        overlay.querySelectorAll('.stage-item').forEach(item => {
             item.classList.remove('active', 'done', 'error');
         });
-        document.querySelectorAll(`#${prefix}ProgressOverlay .stage-connector`).forEach(conn => {
+        overlay.querySelectorAll('.stage-connector').forEach(conn => {
             conn.classList.remove('active', 'done');
         });
-
-        startTimer(prefix + 'ProgressTimer');
     }
+
+    // 重置内联卡片 UI
+    const inlineCard = getInlineProgressCard(prefix);
+    if (inlineCard) {
+        inlineCard.classList.remove('hidden');
+        const inlineFill = document.getElementById(prefix ? `${prefix}InlineProgressBarFill` : 'inlineProgressBarFill');
+        const inlinePercent = document.getElementById(prefix ? `${prefix}InlineProgressPercent` : 'inlineProgressPercent');
+        const inlineMsg = document.getElementById(prefix ? `${prefix}InlineProgressMessage` : 'inlineProgressMessage');
+        const inlineTimer = document.getElementById(prefix ? `${prefix}InlineProgressTimer` : 'inlineProgressTimer');
+        if (inlineFill) inlineFill.style.width = '0%';
+        if (inlinePercent) inlinePercent.textContent = '0%';
+        if (inlineMsg) inlineMsg.textContent = '正在准备...';
+        if (inlineTimer) inlineTimer.textContent = '0s';
+    }
+
+    startTimer(prefix);
 }
 
 function hideProgress(prefix = '') {
-    const overlay = document.getElementById(prefix + 'ProgressOverlay');
+    const overlay = getProgressOverlayEl(prefix);
     if (overlay) overlay.classList.add('hidden');
+
+    const inlineCard = getInlineProgressCard(prefix);
+    if (inlineCard) inlineCard.classList.add('hidden');
+
     stopTimer();
 }
 
@@ -437,6 +523,7 @@ function synthesize() {
             return;
         }
         payload.voice_design_text = voiceDesign;
+        payload.voice = '';
     }
 
     // 显示进度面板
@@ -716,6 +803,59 @@ function cancelCloneSynthesis() {
 // 文生视频
 // ============================================================
 
+async function updateVideoVoiceList() {
+    const select = document.getElementById('videoVoiceSelect');
+    if (!select) return;
+
+    try {
+        const resp = await fetch('/api/voices?model=mimo-v2.5-tts');
+        const data = await resp.json();
+        const voices = data.voices || {};
+
+        let clonedVoices = [];
+        try {
+            const cvResp = await fetch('/api/cloned-voices');
+            const cvData = await cvResp.json();
+            clonedVoices = cvData.voices || [];
+        } catch (e) {}
+
+        const currentVal = select.value;
+        select.innerHTML = '';
+
+        // 官方预置音色
+        const officialGroup = document.createElement('optgroup');
+        officialGroup.label = '官方预置音色';
+        for (const [key, val] of Object.entries(voices)) {
+            const opt = document.createElement('option');
+            opt.value = key;
+            opt.textContent = `${val.name || key} (${val.desc || ''})`;
+            officialGroup.appendChild(opt);
+        }
+        select.appendChild(officialGroup);
+
+        // 已克隆音色
+        if (clonedVoices.length > 0) {
+            const cloneGroup = document.createElement('optgroup');
+            cloneGroup.label = '已保存克隆音色';
+            for (const cv of clonedVoices) {
+                const opt = document.createElement('option');
+                opt.value = 'cloned:' + cv.id;
+                opt.textContent = `[克隆] ${cv.name || cv.id}`;
+                cloneGroup.appendChild(opt);
+            }
+            select.appendChild(cloneGroup);
+        }
+
+        if (currentVal && Array.from(select.options).some(o => o.value === currentVal)) {
+            select.value = currentVal;
+        } else {
+            select.value = 'mimo_default';
+        }
+    } catch (e) {
+        console.warn('加载视频配音列表失败:', e);
+    }
+}
+
 async function loadVideoConfig() {
     const openaiStatus = document.getElementById('videoOpenAIStatus');
     const ffmpegStatus = document.getElementById('videoFfmpegStatus');
@@ -728,7 +868,7 @@ async function loadVideoConfig() {
         openaiStatus.textContent = data.openai_configured ? '图像接口：已配置' : '图像接口：未配置';
         openaiStatus.className = 'status-chip ' + (data.openai_configured ? 'success' : 'warn');
 
-        ffmpegStatus.textContent = data.ffmpeg_available ? 'FFmpeg：可生成 MP4' : 'FFmpeg：未检测到，将只保留分镜产物';
+        ffmpegStatus.textContent = data.ffmpeg_available ? 'FFmpeg：已就绪（可生成运镜动效与硬字幕 MP4）' : 'FFmpeg：未检测到，将只保留分镜产物';
         ffmpegStatus.className = 'status-chip ' + (data.ffmpeg_available ? 'success' : 'warn');
     } catch (e) {
         openaiStatus.textContent = '图像接口：检查失败';
@@ -773,7 +913,6 @@ async function createVideoJob() {
         showToast('视频任务已创建', 'success');
     } catch (e) {
         showToast(e.message || '创建任务失败', 'error');
-    } finally {
         btn.disabled = false;
         btn.innerHTML = `
             <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="5 3 19 12 5 21 5 3"/></svg>
@@ -784,6 +923,12 @@ async function createVideoJob() {
 
 function startVideoPolling(jobId) {
     stopVideoPolling();
+    // 立即拉取一次
+    fetch(`/api/video/jobs/${jobId}`)
+        .then(r => r.json())
+        .then(data => { if (data.job) renderVideoJob(data.job); })
+        .catch(() => {});
+
     currentVideoPollTimer = setInterval(async () => {
         try {
             const resp = await fetch(`/api/video/jobs/${jobId}`);
@@ -799,7 +944,7 @@ function startVideoPolling(jobId) {
             stopVideoPolling();
             showToast('任务轮询失败', 'error');
         }
-    }, 2500);
+    }, 2000);
 }
 
 function stopVideoPolling() {
@@ -820,10 +965,27 @@ function renderVideoJob(job) {
     const videoPlayer = document.getElementById('videoPlayer');
     const previewHint = document.getElementById('videoPreviewHint');
     const storyboardGrid = document.getElementById('storyboardGrid');
+    const genBtn = document.getElementById('videoGenerateBtn');
 
     fill.style.width = (job.progress || 0) + '%';
-    statusText.textContent = mapVideoJobStatus(job.status, job.error);
+    const displayStatus = job.detail_message || mapVideoJobStatus(job.status, job.error);
+    statusText.textContent = displayStatus;
     progressText.textContent = (job.progress || 0) + '%';
+
+    // 动态同步主操作按钮状态
+    const isOngoing = ['pending', 'planning', 'generating_assets', 'building_subtitles', 'rendering_video'].includes(job.status);
+    if (genBtn) {
+        if (isOngoing) {
+            genBtn.disabled = true;
+            genBtn.innerHTML = `<span style="display:inline-block;width:14px;height:14px;border:2px solid #fff;border-top-color:transparent;border-radius:50%;animation:spin 1s linear infinite;margin-right:6px;vertical-align:middle"></span> ${displayStatus} (${job.progress || 0}%)`;
+        } else {
+            genBtn.disabled = false;
+            genBtn.innerHTML = `
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="5 3 19 12 5 21 5 3"/></svg>
+                开始生成视频
+            `;
+        }
+    }
 
     if (job.warnings && job.warnings.length) {
         warnings.classList.remove('hidden');
@@ -842,7 +1004,10 @@ function renderVideoJob(job) {
     if (job.video_url) {
         downloadBtn.classList.remove('hidden');
         downloadBtn.href = job.video_url;
-        videoPlayer.src = job.video_url;
+        if (videoPlayer.getAttribute('src') !== job.video_url) {
+            videoPlayer.src = job.video_url;
+            videoPlayer.load();
+        }
         previewHint.classList.add('hidden');
     } else {
         downloadBtn.classList.add('hidden');
@@ -1002,8 +1167,103 @@ async function deleteHistory(id) {
 }
 
 // ============================================================
-// 克隆音色管理
+// 克隆音色管理与试听
 // ============================================================
+let currentPreviewAudio = null;
+let currentPreviewVoiceId = null;
+
+function togglePreviewVoice(voiceId, sampleUrl) {
+    const url = sampleUrl || `/api/cloned-voices/${voiceId}/sample`;
+
+    // 如果当前正在播放同一个，暂停它
+    if (currentPreviewVoiceId === voiceId && currentPreviewAudio && !currentPreviewAudio.paused) {
+        currentPreviewAudio.pause();
+        updatePreviewButtonState(voiceId, false);
+        currentPreviewVoiceId = null;
+        return;
+    }
+
+    // 暂停之前正在播放的
+    if (currentPreviewAudio) {
+        currentPreviewAudio.pause();
+        if (currentPreviewVoiceId) {
+            updatePreviewButtonState(currentPreviewVoiceId, false);
+        }
+    }
+
+    if (!currentPreviewAudio) {
+        currentPreviewAudio = new Audio();
+        currentPreviewAudio.onended = () => {
+            if (currentPreviewVoiceId) {
+                updatePreviewButtonState(currentPreviewVoiceId, false);
+            }
+            currentPreviewVoiceId = null;
+        };
+        currentPreviewAudio.onerror = () => {
+            showToast('试听音频加载失败', 'error');
+            if (currentPreviewVoiceId) {
+                updatePreviewButtonState(currentPreviewVoiceId, false);
+            }
+            currentPreviewVoiceId = null;
+        };
+    }
+
+    currentPreviewVoiceId = voiceId;
+    currentPreviewAudio.src = url;
+    currentPreviewAudio.load();
+    updatePreviewButtonState(voiceId, true);
+    currentPreviewAudio.play().catch(e => {
+        console.warn('播放失败:', e);
+        updatePreviewButtonState(voiceId, false);
+        currentPreviewVoiceId = null;
+        showToast('浏览器阻止了自动播放，请再点击一次', 'error');
+    });
+}
+
+function updatePreviewButtonState(voiceId, isPlaying) {
+    const item = document.querySelector(`.cloned-voice-item[data-id="${voiceId}"]`);
+    if (!item) return;
+
+    if (isPlaying) {
+        item.classList.add('playing');
+    } else {
+        item.classList.remove('playing');
+    }
+
+    const roundBtn = item.querySelector('.btn-preview-voice-round');
+    if (roundBtn) {
+        roundBtn.innerHTML = isPlaying
+            ? `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="6" y="4" width="4" height="16"/><rect x="14" y="4" width="4" height="16"/></svg>`
+            : `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="5 3 19 12 5 21 5 3"/></svg>`;
+        roundBtn.title = isPlaying ? '暂停试听' : '点击试听';
+    }
+
+    const textBtn = item.querySelector('.btn-preview-voice-text');
+    if (textBtn) {
+        textBtn.innerHTML = isPlaying
+            ? `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="6" y="4" width="4" height="16"/><rect x="14" y="4" width="4" height="16"/></svg><span>暂停</span>`
+            : `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="5 3 19 12 5 21 5 3"/></svg><span>试听</span>`;
+        textBtn.title = isPlaying ? '暂停试听' : '试听样本';
+    }
+}
+
+function useClonedVoiceInSynthesize(voiceId) {
+    // 切换到【语音合成】Tab
+    const synthNav = document.querySelector('.nav-item[data-tab="synthesize"]');
+    if (synthNav) synthNav.click();
+
+    // 模型选为 mimo-v2.5-tts
+    const ttsModelOpt = document.querySelector('.model-option[data-model="mimo-v2.5-tts"]');
+    if (ttsModelOpt) ttsModelOpt.click();
+
+    // 下拉框选中该克隆音色
+    const voiceSelect = document.getElementById('voiceSelect');
+    if (voiceSelect) {
+        voiceSelect.value = 'cloned:' + voiceId;
+    }
+    showToast('已切换至语音合成并应用该音色', 'info');
+}
+
 async function loadClonedVoicesList() {
     try {
         const resp = await fetch('/api/cloned-voices');
@@ -1017,7 +1277,6 @@ async function loadClonedVoicesList() {
 
         if (voices.length === 0) {
             if (empty) empty.style.display = '';
-            // Remove any existing items
             list.querySelectorAll('.cloned-voice-item').forEach(el => el.remove());
             updateVideoVoiceList();
             return;
@@ -1025,24 +1284,44 @@ async function loadClonedVoicesList() {
 
         if (empty) empty.style.display = 'none';
 
-        // Build list
+        // 渲染列表
         list.querySelectorAll('.cloned-voice-item').forEach(el => el.remove());
         for (const cv of voices) {
             const item = document.createElement('div');
-            item.className = 'cloned-voice-item';
-            item.style.cssText = 'display:flex;align-items:center;justify-content:space-between;padding:8px 12px;border-bottom:1px solid var(--border-color);';
+            item.className = 'cloned-voice-item' + (currentPreviewVoiceId === cv.id ? ' playing' : '');
+            item.dataset.id = cv.id;
+            const sampleUrl = cv.sample_url || `/api/cloned-voices/${cv.id}/sample`;
+            const isPlaying = currentPreviewVoiceId === cv.id;
+
             item.innerHTML = `
-                <div>
-                    <div style="font-weight:500">${escapeHtml(cv.name)}</div>
-                    <div style="font-size:12px;color:var(--text-muted)">
-                        ${cv.original_filename ? escapeHtml(cv.original_filename) + ' · ' : ''}
-                        ${cv.duration_secs ? cv.duration_secs + 's' : ''}
-                        · ${formatTime(cv.created_at)}
+                <div class="voice-info-left" onclick="togglePreviewVoice('${cv.id}', '${sampleUrl}')">
+                    <button type="button" class="btn-preview-voice-round" title="${isPlaying ? '暂停试听' : '点击试听'}" onclick="event.stopPropagation(); togglePreviewVoice('${cv.id}', '${sampleUrl}')">
+                        ${isPlaying
+                            ? `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="6" y="4" width="4" height="16"/><rect x="14" y="4" width="4" height="16"/></svg>`
+                            : `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="5 3 19 12 5 21 5 3"/></svg>`}
+                    </button>
+                    <div>
+                        <div class="voice-name">${escapeHtml(cv.name)}</div>
+                        <div class="voice-meta">
+                            ${cv.original_filename ? escapeHtml(cv.original_filename) + ' · ' : ''}
+                            ${cv.duration_secs ? cv.duration_secs + 's' : ''}
+                            · ${formatTime(cv.created_at)}
+                        </div>
                     </div>
                 </div>
-                <button class="btn-icon" title="删除" onclick="deleteClonedVoice('${cv.id}')">
-                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
-                </button>
+                <div class="voice-actions">
+                    <button type="button" class="btn btn-sm btn-outline btn-preview-voice-text" title="${isPlaying ? '暂停试听' : '试听样本'}" onclick="event.stopPropagation(); togglePreviewVoice('${cv.id}', '${sampleUrl}')">
+                        ${isPlaying
+                            ? `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="6" y="4" width="4" height="16"/><rect x="14" y="4" width="4" height="16"/></svg><span>暂停</span>`
+                            : `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="5 3 19 12 5 21 5 3"/></svg><span>试听</span>`}
+                    </button>
+                    <button type="button" class="btn btn-sm btn-ghost" title="在语音合成中使用" onclick="event.stopPropagation(); useClonedVoiceInSynthesize('${cv.id}')">
+                        使用
+                    </button>
+                    <button type="button" class="btn-icon" title="删除" onclick="event.stopPropagation(); deleteClonedVoice('${cv.id}')">
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
+                    </button>
+                </div>
             `;
             list.appendChild(item);
         }
@@ -1054,6 +1333,10 @@ async function loadClonedVoicesList() {
 
 async function deleteClonedVoice(voiceId) {
     if (!confirm('确定要删除这个克隆音色吗？')) return;
+    if (currentPreviewVoiceId === voiceId && currentPreviewAudio) {
+        currentPreviewAudio.pause();
+        currentPreviewVoiceId = null;
+    }
     try {
         const resp = await fetch('/api/cloned-voices/' + voiceId, { method: 'DELETE' });
         if (resp.ok) {

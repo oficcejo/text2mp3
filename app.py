@@ -26,6 +26,31 @@ from video_mvp import register_video_mvp_routes
 
 load_dotenv()
 
+# 自动探测并注入 FFmpeg 路径到 PATH 与 pydub
+ffmpeg_bin = os.getenv("FFMPEG_BIN", "").strip()
+ffmpeg_candidate_dirs = []
+if ffmpeg_bin and Path(ffmpeg_bin).exists():
+    ffmpeg_candidate_dirs.append(str(Path(ffmpeg_bin).parent))
+for p in [r"D:\ffmpeg\bin", r"C:\ffmpeg\bin", r"D:\web\videotool"]:
+    if (Path(p) / "ffmpeg.exe").exists() and p not in ffmpeg_candidate_dirs:
+        ffmpeg_candidate_dirs.append(p)
+
+for fdir in ffmpeg_candidate_dirs:
+    if fdir not in os.environ.get("PATH", ""):
+        os.environ["PATH"] = fdir + os.pathsep + os.environ.get("PATH", "")
+
+try:
+    import shutil
+    from pydub import AudioSegment
+    _ff_path = shutil.which("ffmpeg")
+    if _ff_path:
+        AudioSegment.converter = _ff_path
+    _ffprobe_path = shutil.which("ffprobe")
+    if _ffprobe_path:
+        AudioSegment.ffprobe = _ffprobe_path
+except Exception:
+    pass
+
 app = Flask(__name__)
 app.secret_key = os.urandom(24)
 
@@ -333,6 +358,8 @@ def call_mimo_tts(
         if voice_info is not None:
             voice_info["base64"] = voice_audio_base64
         audio_params["voice"] = f"data:{voice_audio_mime};base64,{voice_audio_base64}"
+    elif model == "mimo-v2.5-tts-voicedesign":
+        pass
     elif voice:
         audio_params["voice"] = voice
 
@@ -451,11 +478,21 @@ def call_mimo_tts(
 def convert_to_mp3(wav_bytes: bytes) -> bytes:
     """将 WAV 字节转换为 MP3"""
     import io
+    import shutil
     from pydub import AudioSegment
-    audio = AudioSegment.from_wav(io.BytesIO(wav_bytes))
-    buf = io.BytesIO()
-    audio.export(buf, format="mp3", bitrate="192k")
-    return buf.getvalue()
+
+    if not getattr(AudioSegment, "converter", None):
+        ff = shutil.which("ffmpeg") or (r"D:\ffmpeg\bin\ffmpeg.exe" if Path(r"D:\ffmpeg\bin\ffmpeg.exe").exists() else None)
+        if ff:
+            AudioSegment.converter = str(ff)
+
+    try:
+        audio = AudioSegment.from_wav(io.BytesIO(wav_bytes))
+        buf = io.BytesIO()
+        audio.export(buf, format="mp3", bitrate="192k")
+        return buf.getvalue()
+    except Exception as e:
+        raise RuntimeError(f"MP3 转换失败（请检查 FFmpeg 是否可用）: {e}")
 
 
 register_video_mvp_routes(app, {
@@ -537,6 +574,7 @@ def api_tts_progress():
     # VoiceDesign：音色描述合并到风格指令
     voice_design_text = data.get("voice_design_text", "")
     if model == "mimo-v2.5-tts-voicedesign":
+        voice = ""
         if not voice_design_text:
             def err_gen():
                 yield f"data: {json.dumps({'stage': 'error', 'progress': 0, 'message': 'VoiceDesign 模型需要填写音色描述'})}\n\n"
@@ -831,7 +869,20 @@ def api_tts_voiceclone():
 def api_cloned_voices():
     """返回已克隆音色列表"""
     voices = load_cloned_voices()
+    for v in voices:
+        v["sample_url"] = f"/api/cloned-voices/{v['id']}/sample"
     return jsonify({"voices": voices})
+
+
+@app.route("/api/cloned-voices/<voice_id>/sample", methods=["GET"])
+def api_cloned_voice_sample(voice_id):
+    """获取克隆音色样本音频供试听"""
+    voice_dir = CLONED_VOICES_DIR / voice_id
+    for ext, mime in [(".wav", "audio/wav"), (".mp3", "audio/mpeg")]:
+        sample_path = voice_dir / f"sample{ext}"
+        if sample_path.exists():
+            return send_file(str(sample_path), mimetype=mime)
+    return jsonify({"error": "克隆音色样本文件不存在"}), 404
 
 
 @app.route("/api/cloned-voices/<voice_id>", methods=["DELETE"])
