@@ -1,10 +1,24 @@
 # MiMo TTS / 文生视频工具
 
+<p align="left">
+  <a href="https://github.com/oficcejo/text2mp3"><img src="https://img.shields.io/github/stars/oficcejo/text2mp3?style=social" alt="GitHub stars"></a>
+  <a href="https://github.com/oficcejo/text2mp3"><img src="https://img.shields.io/github/forks/oficcejo/text2mp3?style=social" alt="GitHub forks"></a>
+  <a href="https://github.com/oficcejo/text2mp3/blob/main/LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="License"></a>
+  <img src="https://img.shields.io/badge/Python-3.10+-3776AB?logo=python&logoColor=white" alt="Python">
+</p>
+
+> 🌟 **欢迎前往 GitHub 仓库点 Star ⭐️ 支持！**
+> 
+> 🔗 **项目开源仓库地址**：[https://github.com/oficcejo/text2mp3](https://github.com/oficcejo/text2mp3)
+> 
+> 如果您觉得这个项目对您有帮助，请点击仓库右上角 **Star ⭐️** 给予鼓励，您的支持是项目持续升级的最大动力！
+
 一个基于 Flask 的本地 Web 工具，支持：
 
-- MiMo TTS 文本转语音
-- 克隆音色管理
-- 文章转漫画视频 MVP
+- 小米 MiMo TTS 官方全套音色（中文、英文）
+- 专属音色设计（Voice Design）工作台
+- 声音克隆（Voice Clone）与音色库管理
+- 文章转漫画视频 MVP（工程持久化、分镜编辑、一键极速换配音）
 
 ## 功能说明
 
