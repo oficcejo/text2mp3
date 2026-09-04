@@ -106,209 +106,130 @@ def register_video_mvp_routes(app, deps: Dict[str, Any]):
             return configured
         return shutil.which("ffmpeg")
 
-    def split_sentences(text: str) -> List[str]:
-        parts = re.split(r"(?<=[。！？!?\.])\s*", text.strip())
-        return [part.strip() for part in parts if part.strip()]
+    def split_sentences_clean(text: str) -> List[str]:
+        pattern = r'[^。！？!?；\n]+(?:[。！？!?；][”"’\']?|$)'
+        items = re.findall(pattern, text)
+        return [s.strip() for s in items if s.strip()]
 
     def estimate_duration_sec(text: str) -> float:
         estimated = max(4.0, len(text.strip()) / 4.6)
         return round(estimated, 1)
 
-    def chunk_text_by_duration(text: str, min_sec: int, max_sec: int, max_count: int) -> List[str]:
-        text = re.sub(r"\r\n?", "\n", text).strip()
-        if not text:
-            return []
+    def chunk_text_verbatim(raw_text: str, min_chars: int = 40, max_chars: int = 85) -> List[str]:
+        """
+        1:1 原文无损分块：
+        - 优先在句子与段落边界切分；
+        - 控制单分镜在 40~85 字（配音约 8~18 秒，视频节奏最佳）；
+        - 全文所有段落与句子 100% 连续覆盖，不丢弃任何一句话、不作任何删减概括。
+        """
+        raw_text = re.sub(r'\r\n?', '\n', raw_text.strip())
+        paragraphs = [p.strip() for p in raw_text.split('\n') if p.strip()]
 
-        target_chars = max(90, int(((min_sec + max_sec) / 2) * 4.6))
-        max_chars = max(target_chars + 60, int(max_sec * 5.2))
-        paragraphs = [p.strip() for p in re.split(r"\n{2,}", text) if p.strip()]
-        chunks: List[str] = []
-        current = ""
+        chunks = []
+        current = ''
 
-        def flush() -> None:
-            nonlocal current
-            if current.strip():
-                chunks.append(current.strip())
-                current = ""
+        for p in paragraphs:
+            sentences = split_sentences_clean(p)
+            if not sentences:
+                sentences = [p]
 
-        for para in paragraphs:
-            sentences = split_sentences(para) or [para]
-            for sentence in sentences:
-                candidate = (current + "\n" + sentence).strip() if current else sentence
-                if len(candidate) <= max_chars:
-                    current = candidate
-                    if len(current) >= target_chars:
-                        flush()
+            for s in sentences:
+                if not current:
+                    current = s
+                elif len(current) + len(s) <= max_chars:
+                    current += s
+                    if len(current) >= min_chars:
+                        chunks.append(current)
+                        current = ''
                 else:
-                    if current:
-                        flush()
-                    if len(sentence) <= max_chars:
-                        current = sentence
-                    else:
-                        for i in range(0, len(sentence), max_chars):
-                            chunks.append(sentence[i:i + max_chars].strip())
-            if len(chunks) >= max_count:
-                break
+                    chunks.append(current)
+                    current = s
 
-        if len(chunks) < max_count:
-            flush()
+            if current and len(current) >= min_chars:
+                chunks.append(current)
+                current = ''
 
-        if len(chunks) > max_count:
-            tail = chunks[max_count - 1:]
-            chunks = chunks[:max_count - 1] + ["\n".join(tail)]
+        if current:
+            chunks.append(current)
 
-        return [chunk for chunk in chunks if chunk]
+        return chunks
 
-    def coerce_storyboard(raw_data: Dict[str, Any], text: str, settings: Dict[str, Any]) -> Dict[str, Any]:
-        scenes = raw_data.get("scenes") if isinstance(raw_data, dict) else None
-        if not isinstance(scenes, list) or not scenes:
-            raise ValueError("planner returned no scenes")
-
-        normalized_scenes = []
-        for idx, scene in enumerate(scenes, start=1):
-            if not isinstance(scene, dict):
-                continue
-            narration = str(scene.get("narration_text") or scene.get("narration") or "").strip()
-            subtitle = str(scene.get("subtitle_text") or narration).strip()
-            image_prompt = str(scene.get("image_prompt") or scene.get("visual_prompt") or "").strip()
-            if not narration:
-                continue
-            if subtitle and len(subtitle) < len(narration) * 0.65:
-                subtitle = narration
-            if not image_prompt:
-                image_prompt = narration[:220]
-            duration = scene.get("estimated_duration_sec") or estimate_duration_sec(narration)
-            try:
-                duration = float(duration)
-            except Exception:
-                duration = estimate_duration_sec(narration)
-            normalized_scenes.append({
-                "scene_index": idx,
-                "title": str(scene.get("title") or f"Scene {idx}").strip(),
-                "source_excerpt": narration[:120].strip(),
-                "narration_text": narration,
-                "subtitle_text": subtitle,
-                "image_prompt": image_prompt,
-                "estimated_duration_sec": max(4.0, min(duration, settings["scene_max_sec"] * 1.4)),
-                "image_file": None,
-                "frame_file": None,
-                "audio_file": None,
-                "start_sec": None,
-                "end_sec": None,
-            })
-
-        if not normalized_scenes:
-            raise ValueError("planner scenes invalid")
-
-        return {
-            "title": str(raw_data.get("title") or split_sentences(text)[0][:40] or "????").strip(),
-            "style": str(raw_data.get("style") or settings["style"]).strip() or settings["style"],
-            "aspect_ratio": settings["aspect_ratio"],
-            "total_estimated_duration_sec": round(sum(scene["estimated_duration_sec"] for scene in normalized_scenes), 1),
-            "scenes": normalized_scenes,
-        }
-
-    def build_storyboard_fallback(text: str, settings: Dict[str, Any]) -> Dict[str, Any]:
-        chunks = chunk_text_by_duration(
-            text=text,
-            min_sec=settings["scene_min_sec"],
-            max_sec=settings["scene_max_sec"],
-            max_count=settings["scene_max_count"],
-        )
-        scenes = []
-        for idx, chunk in enumerate(chunks, start=1):
-            normalized = re.sub(r"[ 	]+", " ", chunk).strip()
-            scenes.append({
-                "scene_index": idx,
-                "title": f"?? {idx}",
-                "source_excerpt": normalized[:120],
-                "narration_text": chunk,
-                "subtitle_text": normalized,
-                "image_prompt": (
-                    "Chinese comic storyboard, cinematic composition, clear subject, no speech bubbles, no watermark, suitable for video."
-                    f" Scene content: {normalized[:220]}"
-                ),
-                "estimated_duration_sec": estimate_duration_sec(chunk),
-                "image_file": None,
-                "frame_file": None,
-                "audio_file": None,
-                "start_sec": None,
-                "end_sec": None,
-            })
-
-        return {
-            "title": split_sentences(text)[0][:40] if split_sentences(text) else "????",
-            "style": settings["style"],
-            "aspect_ratio": settings["aspect_ratio"],
-            "total_estimated_duration_sec": round(sum(scene["estimated_duration_sec"] for scene in scenes), 1),
-            "scenes": scenes,
-        }
-
-    def planner_prompt_payload(text: str, settings: Dict[str, Any]) -> Dict[str, Any]:
-        return {
-            "model": get_openai_settings()["text_model"],
-            "temperature": 0.3,
-            "messages": [
-                {
-                    "role": "system",
-                    "content": (
-                        "你是中文漫画视频分镜导演。"
-                        "请把文章拆成适合静态漫画视频的分镜，并且只返回 JSON。"
-                        "返回格式必须是一个 JSON 对象，包含 title、style、scenes。"
-                        "scenes 是数组，每项包含 title、source_excerpt、narration_text、subtitle_text、image_prompt、estimated_duration_sec。"
-                        "image_prompt 要适合中文漫画分镜生图，不要包含对白气泡和水印。"
-                    ),
-                },
-                {
-                    "role": "user",
-                    "content": (
-                        f"风格：{settings['style']}\n"
-                        f"每个分镜建议时长：{settings['scene_min_sec']}-{settings['scene_max_sec']} 秒\n"
-                        f"最多分镜数：{settings['scene_max_count']}\n"
-                        "文章如下：\n"
-                        f"{text}"
-                    ),
-                },
-            ],
-        }
-
-    def extract_first_json_block(text: str) -> Dict[str, Any]:
+    def extract_first_json_block(text: str) -> Any:
         text = text.strip()
-        if text.startswith("{") and text.endswith("}"):
-            return json.loads(text)
+        if (text.startswith("{") and text.endswith("}")) or (text.startswith("[") and text.endswith("]")):
+            try:
+                return json.loads(text)
+            except Exception:
+                pass
 
-        start = text.find("{")
-        end = text.rfind("}")
-        if start >= 0 and end > start:
-            return json.loads(text[start:end + 1])
+        start_obj = text.find("{")
+        end_obj = text.rfind("}")
+        start_arr = text.find("[")
+        end_arr = text.rfind("]")
+
+        if start_arr >= 0 and (start_obj < 0 or start_arr < start_obj):
+            if end_arr > start_arr:
+                try:
+                    return json.loads(text[start_arr:end_arr + 1])
+                except Exception:
+                    pass
+        if start_obj >= 0 and end_obj > start_obj:
+            try:
+                return json.loads(text[start_obj:end_obj + 1])
+            except Exception:
+                pass
         raise ValueError("no json block found")
 
-    def try_plan_storyboard_with_llm(text: str, settings: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    def enrich_scenes_with_llm(scenes: List[Dict[str, Any]], style: str) -> None:
+        """
+        利用大模型仅为各分镜构思生动具象的生图提示词 (image_prompt) 和小标题 (title)，
+        严禁修改或缩减分镜的原文字句（配音与字幕 100% 锁定原文）。
+        """
         openai_settings = get_openai_settings()
-        if not openai_settings["api_key"]:
-            return None
+        if not openai_settings["api_key"] or not scenes:
+            return
 
-        payload = planner_prompt_payload(text, settings)
-        headers = {
-            "Authorization": f"Bearer {openai_settings['api_key']}",
-            "Content-Type": "application/json",
+        target_scenes = scenes[:40]
+        prompt_items = [{"scene_index": s["scene_index"], "text": s["narration_text"]} for s in target_scenes]
+
+        system_msg = (
+            "你是漫画视频视觉分镜导演。请根据分镜的原文字句，为分镜设计视觉画面的生图提示词 image_prompt 与简短标题 title。"
+            "【特别注意】：你只负责设计画面提示词，严禁输出或改写配音解说词！"
+            "返回格式为 JSON 数组，例如：[{\"scene_index\": 1, \"title\": \"...\", \"image_prompt\": \"...\"}]"
+        )
+        user_msg = f"画面风格：{style}。\n分镜列表：\n{json.dumps(prompt_items, ensure_ascii=False)}"
+
+        payload = {
+            "model": openai_settings["text_model"],
+            "temperature": 0.3,
+            "messages": [
+                {"role": "system", "content": system_msg},
+                {"role": "user", "content": user_msg},
+            ],
         }
         try:
             response = requests.post(
                 f"{openai_settings['base_url']}/chat/completions",
-                headers=headers,
+                headers={"Authorization": f"Bearer {openai_settings['api_key']}", "Content-Type": "application/json"},
                 json=payload,
-                timeout=(15, openai_settings["timeout"]),
+                timeout=(15, min(60, openai_settings["timeout"])),
             )
-            response.raise_for_status()
-            data = response.json()
-            content = data["choices"][0]["message"]["content"]
-            if isinstance(content, list):
-                content = "".join(part.get("text", "") for part in content if isinstance(part, dict))
-            raw_storyboard = extract_first_json_block(str(content))
-            return coerce_storyboard(raw_storyboard, text, settings)
-        except Exception:
-            return None
+            if response.status_code == 200:
+                data = response.json()
+                content = data["choices"][0]["message"]["content"]
+                if isinstance(content, list):
+                    content = "".join(part.get("text", "") for part in content if isinstance(part, dict))
+                raw_list = extract_first_json_block(str(content))
+                if isinstance(raw_list, list):
+                    lookup = {item["scene_index"]: item for item in raw_list if isinstance(item, dict) and "scene_index" in item}
+                    for s in scenes:
+                        if s["scene_index"] in lookup:
+                            if lookup[s["scene_index"]].get("title"):
+                                s["title"] = str(lookup[s["scene_index"]]["title"]).strip()
+                            if lookup[s["scene_index"]].get("image_prompt"):
+                                s["image_prompt"] = str(lookup[s["scene_index"]]["image_prompt"]).strip()
+        except Exception as exc:
+            print(f"视觉生图提示词补充跳过: {exc}", flush=True)
 
     def write_simple_png(output_path: Path, width: int, height: int, color: Tuple[int, int, int]) -> None:
         output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -786,10 +707,52 @@ def register_video_mvp_routes(app, deps: Dict[str, Any]):
         return manifest
 
     def build_storyboard(text: str, settings: Dict[str, Any]) -> Dict[str, Any]:
-        planned = try_plan_storyboard_with_llm(text, settings)
-        if planned:
-            return planned
-        return build_storyboard_fallback(text, settings)
+        """
+        1:1 原文完全无损分镜构建器：
+        - 按照自然句子切分，全文 100% 覆盖，绝不遗漏任何语句；
+        - narration_text 与 subtitle_text 严格采用 1:1 原文原句，一字不差；
+        - 智能辅以大模型提炼画面生图提示词。
+        """
+        chunks = chunk_text_verbatim(text)
+        style = settings.get("style", "comic")
+        aspect_ratio = settings.get("aspect_ratio", "16:9")
+
+        scenes = []
+        for idx, chunk in enumerate(chunks, start=1):
+            sents = split_sentences_clean(chunk)
+            title = sents[0][:20] if sents else f"分镜 {idx}"
+            image_prompt = (
+                f"Chinese comic storyboard, cinematic composition, style: {style}, clear subject, no speech bubbles, no watermark, suitable for video."
+                f" Scene content: {chunk[:220]}"
+            )
+            scenes.append({
+                "scene_index": idx,
+                "title": title,
+                "source_excerpt": chunk[:120],
+                "narration_text": chunk,       # 100% 1:1 原文原句，绝不丢弃、篡改或精简
+                "subtitle_text": chunk,        # 100% 1:1 原文字幕，与配音完全逐字对应
+                "image_prompt": image_prompt,
+                "estimated_duration_sec": estimate_duration_sec(chunk),
+                "image_file": None,
+                "frame_file": None,
+                "audio_file": None,
+                "start_sec": None,
+                "end_sec": None,
+            })
+
+        # 尝试大模型丰富生图提示词（绝对不触碰配音与字幕原句）
+        enrich_scenes_with_llm(scenes, style)
+
+        paragraphs = [p.strip() for p in text.split("\n") if p.strip()]
+        main_title = paragraphs[0][:30] if paragraphs else "视频成片"
+
+        return {
+            "title": main_title,
+            "style": style,
+            "aspect_ratio": aspect_ratio,
+            "total_estimated_duration_sec": round(sum(s["estimated_duration_sec"] for s in scenes), 1),
+            "scenes": scenes,
+        }
 
     def run_job(job_id: str) -> None:
         job_dir = jobs_dir / job_id
@@ -800,7 +763,7 @@ def register_video_mvp_routes(app, deps: Dict[str, Any]):
         warnings = list(manifest.get("warnings", []))
 
         try:
-            update_manifest(job_dir, status="planning", progress=8, detail_message="大模型正在智能拆解故事分镜...", error=None)
+            update_manifest(job_dir, status="planning", progress=8, detail_message="正在 1:1 提取原文并规划分镜画面...", error=None)
             storyboard = build_storyboard(manifest["source_text"], settings)
             json_write(job_dir / "storyboard.json", storyboard)
 
