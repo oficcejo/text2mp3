@@ -11,6 +11,13 @@ let currentDesignAudioBase64 = null;
 let currentVoicePreviewAudio = null;
 let currentVoicePreviewId = null;
 
+// 文生动画专属状态变量
+let currentAnimJobId = null;
+let currentAnimPollTimer = null;
+let currentAnimStartTime = null;
+let currentAnimTimerInterval = null;
+let currentAnimStoryboard = null;
+
 // ============================================================
 // 初始化
 // ============================================================
@@ -22,11 +29,13 @@ document.addEventListener('DOMContentLoaded', function() {
     loadDesignedVoices();
     updateAllVoiceDropdowns();
     loadProjectCount();
+    loadAnimProjectCount();
     loadVideoConfig();
     setupTabSwitching();
     setupModelSelector();
     setupFileUpload();
     setupProjectNameInput();
+    setupAnimThemeSelector();
 });
 
 // ============================================================
@@ -92,6 +101,7 @@ function setupCharCounters() {
     updateCounter('textInput', 'charCount', null);
     updateCounter('cloneTextInput', 'cloneCharCount', 'cloneTokenEst');
     updateCounter('videoTextInput', 'videoCharCount', 'videoTokenEst');
+    updateCounter('animTextInput', 'animCharCount', null);
 }
 
 // ============================================================
@@ -116,6 +126,10 @@ function setupTabSwitching() {
                 loadVideoConfig();
                 updateAllVoiceDropdowns();
                 loadProjectCount();
+            } else if (tab === 'animation') {
+                updateAllVoiceDropdowns();
+                loadAnimProjectCount();
+                setupAnimThemeSelector();
             } else if (tab === 'voicedesign') {
                 loadDesignedVoices();
             }
@@ -248,6 +262,16 @@ async function updateAllVoiceDropdowns() {
         const changeVoiceSelect = document.getElementById('videoChangeVoiceSelect');
         if (changeVoiceSelect) {
             populateVoiceSelect(changeVoiceSelect, voicesData, clonedVoices, designedVoices);
+        }
+
+        const animVoiceSelect = document.getElementById('animVoiceSelect');
+        if (animVoiceSelect) {
+            populateVoiceSelect(animVoiceSelect, voicesData, clonedVoices, designedVoices);
+        }
+
+        const animChangeVoiceSelect = document.getElementById('animChangeVoiceSelect');
+        if (animChangeVoiceSelect) {
+            populateVoiceSelect(animChangeVoiceSelect, voicesData, clonedVoices, designedVoices);
         }
     } catch (e) {
         console.error('更新音色下拉菜单失败:', e);
@@ -1966,3 +1990,621 @@ async function rerenderVideoFromStoryboard() {
         showToast(e.message || '重新渲染失败', 'error');
     }
 }
+
+// ============================================================
+// 文生动画 (Text-to-Animation) 前端逻辑
+// ============================================================
+
+function setupAnimThemeSelector() {
+    const cards = document.querySelectorAll('#animThemeSelector .theme-card');
+    cards.forEach(c => {
+        c.addEventListener('click', function() {
+            cards.forEach(item => item.classList.remove('active'));
+            this.classList.add('active');
+        });
+    });
+}
+
+function getSelectedAnimTheme() {
+    const active = document.querySelector('#animThemeSelector .theme-card.active');
+    return active ? active.dataset.theme : 'cyber_dark';
+}
+
+async function loadAnimProjectCount() {
+    try {
+        const resp = await fetch('/api/animation/jobs');
+        const data = await resp.json();
+        const countEl = document.getElementById('animProjectCount');
+        if (countEl && data.jobs) {
+            countEl.textContent = data.jobs.length;
+        }
+    } catch (e) {
+        console.warn('获取动画工程数量失败:', e);
+    }
+}
+
+async function startAnimationJob() {
+    const text = document.getElementById('animTextInput').value.trim();
+    if (!text) {
+        showToast('请输入文章或脚本内容', 'warn');
+        return;
+    }
+
+    const projectName = document.getElementById('animProjectNameInput').value.trim();
+    const voice = document.getElementById('animVoiceSelect').value || 'mimo_default';
+    const theme = getSelectedAnimTheme();
+    const resolution = document.getElementById('animResolutionSelect').value || '1920x1080';
+    const fps = parseInt(document.getElementById('animFpsSelect').value || '30', 10);
+
+    const btn = document.getElementById('animStartBtn');
+    btn.disabled = true;
+    btn.innerHTML = '正在提交并规划分镜...';
+
+    // 重置并显示进度卡片
+    document.getElementById('animProgressCard').classList.remove('hidden');
+    document.getElementById('animProgressBarFill').style.width = '5%';
+    document.getElementById('animProgressPercent').textContent = '5%';
+    document.getElementById('animProgressMessage').textContent = '正在通过大模型进行智能分镜规划...';
+
+    // 启动计时器
+    currentAnimStartTime = Date.now();
+    if (currentAnimTimerInterval) clearInterval(currentAnimTimerInterval);
+    const timerEl = document.getElementById('animProgressTimer');
+    currentAnimTimerInterval = setInterval(() => {
+        const sec = Math.floor((Date.now() - currentAnimStartTime) / 1000);
+        if (timerEl) timerEl.textContent = sec + 's';
+    }, 1000);
+
+    try {
+        const resp = await fetch('/api/animation/jobs', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                text,
+                project_name: projectName,
+                voice,
+                theme,
+                resolution,
+                fps
+            })
+        });
+        const data = await resp.json();
+        if (!resp.ok || !data.success) {
+            throw new Error(data.error || '创建动画任务失败');
+        }
+
+        currentAnimJobId = data.job_id;
+        showToast('文生动画任务已启动！正在并发渲染...', 'success');
+        startAnimPolling(currentAnimJobId);
+    } catch (e) {
+        showToast(e.message || '启动失败', 'error');
+        btn.disabled = false;
+        btn.innerHTML = `
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="5 3 19 12 5 21 5 3"/></svg>
+            🚀 开始生成文生动画 (0 Token 极速压制)
+        `;
+        if (currentAnimTimerInterval) clearInterval(currentAnimTimerInterval);
+    }
+}
+
+function startAnimPolling(jobId) {
+    if (currentAnimPollTimer) clearInterval(currentAnimPollTimer);
+    currentAnimJobId = jobId;
+
+    // 立即拉取一次
+    fetch(`/api/animation/jobs/${jobId}`)
+        .then(r => r.json())
+        .then(data => { if (data.job) renderAnimJob(data.job); })
+        .catch(() => {});
+
+    currentAnimPollTimer = setInterval(async () => {
+        try {
+            const resp = await fetch(`/api/animation/jobs/${jobId}`);
+            const data = await resp.json();
+            if (!resp.ok || !data.job) return;
+
+            renderAnimJob(data.job);
+
+            if (data.job.status === 'completed' || data.job.status === 'failed') {
+                clearInterval(currentAnimPollTimer);
+                currentAnimPollTimer = null;
+                if (currentAnimTimerInterval) {
+                    clearInterval(currentAnimTimerInterval);
+                    currentAnimTimerInterval = null;
+                }
+            }
+        } catch (e) {
+            console.warn('轮询动画任务异常:', e);
+        }
+    }, 1500);
+}
+
+function renderAnimJob(job) {
+    const fill = document.getElementById('animProgressBarFill');
+    const pct = document.getElementById('animProgressPercent');
+    const msg = document.getElementById('animProgressMessage');
+
+    const progressPct = Math.min(100, Math.round((job.progress || 0) * 100));
+    if (fill) fill.style.width = progressPct + '%';
+    if (pct) pct.textContent = progressPct + '%';
+    if (msg && job.detail_message) msg.textContent = job.detail_message;
+
+    // 阶段指示器高亮
+    const stages = ['planning', 'synthesizing_audio', 'rendering_video', 'completed'];
+    const curIdx = stages.indexOf(job.stage || job.status);
+    document.querySelectorAll('#animProgressCard .stage-item').forEach(el => {
+        const s = el.dataset.stage;
+        const sIdx = stages.indexOf(s);
+        if (sIdx <= curIdx || curIdx === 3) {
+            el.classList.add('active');
+        } else {
+            el.classList.remove('active');
+        }
+    });
+
+    if (job.status === 'completed') {
+        // 展示播放卡片与分镜卡片
+        document.getElementById('animPlayerCard').classList.remove('hidden');
+        document.getElementById('animStoryboardCard').classList.remove('hidden');
+
+        const player = document.getElementById('animVideoPlayer');
+        if (player && job.video_url) {
+            if (!player.src.endsWith(job.video_url)) {
+                player.src = job.video_url;
+            }
+        }
+
+        const dlVideo = document.getElementById('animDownloadVideoBtn');
+        if (dlVideo && job.video_url) dlVideo.href = job.video_url;
+
+        const dlSrt = document.getElementById('animDownloadSrtBtn');
+        if (dlSrt && job.srt_url) dlSrt.href = job.srt_url;
+
+        const durBadge = document.getElementById('animDurationBadge');
+        if (durBadge) durBadge.textContent = (job.duration_sec || 0).toFixed(1) + 's';
+
+        const nameInput = document.getElementById('animProjectNameInput');
+        if (nameInput && job.project_name) nameInput.value = job.project_name;
+
+        // 填充一键换音的初始值
+        const changeSelect = document.getElementById('animChangeVoiceSelect');
+        if (changeSelect && job.config && job.config.voice) {
+            changeSelect.value = job.config.voice;
+        }
+
+        if (job.storyboard) {
+            renderAnimStoryboardGrid(job.storyboard);
+        }
+
+        const btn = document.getElementById('animStartBtn');
+        if (btn) {
+            btn.disabled = false;
+            btn.innerHTML = `
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="5 3 19 12 5 21 5 3"/></svg>
+                🚀 开始生成文生动画 (0 Token 极速压制)
+            `;
+        }
+        loadAnimProjectCount();
+    } else if (job.status === 'failed') {
+        showToast(`动画生成失败: ${job.error || job.detail_message}`, 'error');
+        const btn = document.getElementById('animStartBtn');
+        if (btn) {
+            btn.disabled = false;
+            btn.innerHTML = `
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="5 3 19 12 5 21 5 3"/></svg>
+                🚀 开始生成文生动画 (0 Token 极速压制)
+            `;
+        }
+    }
+}
+
+function renderAnimStoryboardGrid(storyboard) {
+    currentAnimStoryboard = storyboard;
+    const grid = document.getElementById('animStoryboardGrid');
+    if (!grid) return;
+
+    grid.innerHTML = '';
+    const scenes = storyboard.scenes || [];
+    if (scenes.length === 0) {
+        grid.innerHTML = '<div style="color:var(--gray-500);grid-column:1/-1;text-align:center;padding:20px;">暂无分镜剧本数据</div>';
+        return;
+    }
+
+    const typeNames = {
+        cards_grid: '亮点卡片',
+        comparison: '红绿对比',
+        data_chart: '走势图表',
+        steps_flow: '步骤向导',
+        metrics_grid: '指标仪表',
+        code_terminal: '代码终端',
+        quote_focus: '观点聚焦',
+        call_to_action: '行动呼吁'
+    };
+
+    scenes.forEach(sc => {
+        const card = document.createElement('div');
+        card.className = 'anim-scene-card';
+
+        const typeLabel = typeNames[sc.type] || sc.type;
+        const tagText = sc.tag || `分镜 0${sc.scene_index}`;
+
+        card.innerHTML = `
+            <div class="anim-scene-card-header">
+                <span class="anim-scene-index-badge">#${sc.scene_index}</span>
+                <span class="anim-scene-type-tag ${sc.type}">${typeLabel} · ${tagText}</span>
+            </div>
+            <div class="anim-scene-title">${escapeHtml(sc.title || '')}</div>
+            ${sc.subtitle ? `<div class="anim-scene-subtitle">${escapeHtml(sc.subtitle)}</div>` : ''}
+            <div class="anim-scene-text">${escapeHtml(sc.narration_text || '')}</div>
+            <div class="anim-scene-footer">
+                <span>⏱️ 时长: ${(sc.duration || 0).toFixed(1)}s</span>
+                ${sc.audio_url ? `
+                    <button class="btn btn-ghost btn-sm" onclick="playSceneAudio('${sc.audio_url}', this)" style="padding:2px 8px;font-size:12px;">
+                        ▶️ 试听原声
+                    </button>
+                ` : ''}
+            </div>
+        `;
+        grid.appendChild(card);
+    });
+}
+
+let activeSceneAudio = null;
+function playSceneAudio(url, btn) {
+    if (activeSceneAudio) {
+        activeSceneAudio.pause();
+        activeSceneAudio = null;
+    }
+    const audio = new Audio(url);
+    activeSceneAudio = audio;
+    if (btn) btn.textContent = '⏸️ 正在播放...';
+    audio.play();
+    audio.onended = () => {
+        if (btn) btn.textContent = '▶️ 试听原声';
+        activeSceneAudio = null;
+    };
+    audio.onerror = () => {
+        if (btn) btn.textContent = '▶️ 试听原声';
+        showToast('音频播放失败', 'error');
+    };
+}
+
+async function changeCurrentAnimVoice() {
+    if (!currentAnimJobId) {
+        showToast('当前没有进行中的动画工程', 'warn');
+        return;
+    }
+    const voice = document.getElementById('animChangeVoiceSelect').value;
+    if (!voice) {
+        showToast('请选择新音色', 'warn');
+        return;
+    }
+
+    const btn = document.getElementById('animChangeVoiceBtn');
+    btn.disabled = true;
+    btn.innerHTML = '正在重混流配音...';
+
+    // 重新展开进度卡片
+    document.getElementById('animProgressCard').classList.remove('hidden');
+    document.getElementById('animProgressBarFill').style.width = '20%';
+    document.getElementById('animProgressPercent').textContent = '20%';
+    document.getElementById('animProgressMessage').textContent = `正在为各分镜重新生成配音并重新渲染...`;
+
+    try {
+        const resp = await fetch(`/api/animation/jobs/${currentAnimJobId}/change-voice`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ voice })
+        });
+        const data = await resp.json();
+        if (!resp.ok || !data.success) throw new Error(data.error || '更换配音失败');
+
+        showToast('已提交一键换音任务！正在极速混流...', 'success');
+        startAnimPolling(currentAnimJobId);
+    } catch (e) {
+        showToast(e.message || '换配音失败', 'error');
+    } finally {
+        btn.disabled = false;
+        btn.innerHTML = `
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg>
+            更换配音并混流
+        `;
+    }
+}
+
+async function saveCurrentAnimProject() {
+    if (!currentAnimJobId) {
+        showToast('尚未创建动画项目', 'warn');
+        return;
+    }
+    const projectName = document.getElementById('animProjectNameInput').value.trim();
+    if (!projectName) {
+        showToast('项目名称不能为空', 'warn');
+        return;
+    }
+
+    try {
+        const resp = await fetch(`/api/animation/jobs/${currentAnimJobId}/save`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ project_name: projectName })
+        });
+        const data = await resp.json();
+        if (!resp.ok || !data.success) throw new Error(data.error || '保存失败');
+        showToast('动画项目名称已保存', 'success');
+        loadAnimProjectCount();
+    } catch (e) {
+        showToast(e.message || '保存失败', 'error');
+    }
+}
+
+// ------------------------------------------------------------
+// 动画工程列表模态框
+// ------------------------------------------------------------
+async function openAnimProjectsModal() {
+    const modal = document.getElementById('animProjectListModal');
+    const body = document.getElementById('animProjectModalListBody');
+    if (!modal || !body) return;
+
+    modal.classList.add('active');
+    body.innerHTML = '<div style="text-align:center;padding:30px;color:var(--gray-500);">正在读取本地动画工程...</div>';
+
+    try {
+        const resp = await fetch('/api/animation/jobs');
+        const data = await resp.json();
+        const jobs = data.jobs || [];
+
+        if (jobs.length === 0) {
+            body.innerHTML = `
+                <div class="empty-state">
+                    <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="#94a3b8" stroke-width="1.5"><polygon points="23 7 16 12 23 17 23 7"/><rect x="1" y="5" width="15" height="14" rx="2" ry="2"/></svg>
+                    <p>暂无本地动画工程</p>
+                    <span style="font-size:12px;color:var(--gray-400);">在文生动画页面点击“开始生成”即可自动创建工程</span>
+                </div>
+            `;
+            return;
+        }
+
+        body.innerHTML = '';
+        jobs.forEach(p => {
+            const item = document.createElement('div');
+            item.className = 'project-item';
+
+            const createdTime = p.created_at ? new Date(p.created_at).toLocaleString() : '未知时间';
+            const statusBadge = p.status === 'completed'
+                ? '<span style="color:#10b981;font-weight:600;">已就绪</span>'
+                : (p.status === 'failed' ? '<span style="color:#ef4444;">失败</span>' : '<span style="color:#3b82f6;">渲染中...</span>');
+
+            item.innerHTML = `
+                <div class="project-thumb" style="background:#0f172a;display:flex;align-items:center;justify-content:center;color:#38bdf8;">
+                    <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="23 7 16 12 23 17 23 7"/><rect x="1" y="5" width="15" height="14" rx="2" ry="2"/></svg>
+                </div>
+                <div class="project-meta">
+                    <div class="project-meta-title">${escapeHtml(p.project_name)}</div>
+                    <div class="project-meta-sub">
+                        <span>🕒 ${createdTime}</span>
+                        <span>⏱️ ${(p.duration_sec || 0).toFixed(1)}s</span>
+                        <span>🎨 主题: ${p.theme}</span>
+                        <span>状态: ${statusBadge}</span>
+                    </div>
+                </div>
+                <div class="project-actions">
+                    <button class="btn btn-outline btn-sm" onclick="loadAnimJobById('${p.job_id}')">打开工程</button>
+                    <button class="btn btn-ghost btn-sm" style="color:var(--red-500);" onclick="deleteAnimJob('${p.job_id}', event)">删除</button>
+                </div>
+            `;
+            body.appendChild(item);
+        });
+    } catch (e) {
+        body.innerHTML = `<div style="color:var(--red-500);text-align:center;padding:20px;">加载工程失败: ${e.message}</div>`;
+    }
+}
+
+function closeAnimProjectsModal() {
+    const modal = document.getElementById('animProjectListModal');
+    if (modal) modal.classList.remove('active');
+}
+
+async function loadAnimJobById(jobId) {
+    closeAnimProjectsModal();
+    currentAnimJobId = jobId;
+
+    showToast('正在载入动画工程...', 'info');
+    try {
+        const resp = await fetch(`/api/animation/jobs/${jobId}`);
+        const data = await resp.json();
+        if (!resp.ok || !data.job) throw new Error(data.error || '读取失败');
+
+        renderAnimJob(data.job);
+        if (data.job.status !== 'completed' && data.job.status !== 'failed') {
+            startAnimPolling(jobId);
+        }
+        showToast(`已加载工程: ${data.job.project_name}`, 'success');
+    } catch (e) {
+        showToast(e.message || '加载工程失败', 'error');
+    }
+}
+
+async function deleteAnimJob(jobId, event) {
+    if (event) event.stopPropagation();
+    if (!confirm('确定删除此动画工程及其全部渲染资产吗？此操作不可恢复。')) return;
+
+    try {
+        const resp = await fetch(`/api/animation/jobs/${jobId}`, { method: 'DELETE' });
+        const data = await resp.json();
+        if (!resp.ok || !data.success) throw new Error(data.error || '删除失败');
+        showToast('动画工程已删除', 'success');
+        openAnimProjectsModal();
+        loadAnimProjectCount();
+    } catch (e) {
+        showToast(e.message || '删除失败', 'error');
+    }
+}
+
+// ------------------------------------------------------------
+// 分镜微调模态框与重新渲染
+// ------------------------------------------------------------
+function openAnimEditAllModal() {
+    if (!currentAnimStoryboard || !currentAnimStoryboard.scenes) {
+        showToast('当前无分镜数据可编辑', 'warn');
+        return;
+    }
+    const modal = document.getElementById('animEditAllModal');
+    const container = document.getElementById('animEditScenesContainer');
+    if (!modal || !container) return;
+
+    container.innerHTML = '';
+    const scenes = currentAnimStoryboard.scenes;
+
+    const typeOptions = [
+        { id: 'cards_grid', name: '亮点卡片矩阵 (cards_grid)' },
+        { id: 'comparison', 'name': '红绿痛点优势对比 (comparison)' },
+        { id: 'data_chart', 'name': '动态行情与走势折线 (data_chart)' },
+        { id: 'steps_flow', 'name': '向导操作步骤流 (steps_flow)' },
+        { id: 'metrics_grid', 'name': '核心指标大数字仪表盘 (metrics_grid)' },
+        { id: 'code_terminal', 'name': '极客终端打字机 (code_terminal)' },
+        { id: 'quote_focus', 'name': '震撼名言金句聚焦 (quote_focus)' },
+        { id: 'call_to_action', 'name': '尾声行动号召与开源 (call_to_action)' }
+    ];
+
+    scenes.forEach(sc => {
+        const card = document.createElement('div');
+        card.className = 'anim-edit-item-card';
+        card.dataset.sceneIndex = sc.scene_index;
+
+        let optionsHtml = '';
+        typeOptions.forEach(opt => {
+            const sel = (sc.type === opt.id) ? 'selected' : '';
+            optionsHtml += `<option value="${opt.id}" ${sel}>${opt.name}</option>`;
+        });
+
+        card.innerHTML = `
+            <div style="display:flex;justify-content:space-between;align-items:center;">
+                <strong style="color:var(--blue-600);">分镜 #${sc.scene_index}</strong>
+                <div style="display:flex;align-items:center;gap:8px;">
+                    <label style="font-size:12px;color:var(--gray-600);">版式类型:</label>
+                    <select class="form-select scene-type-input" style="height:32px;font-size:12px;padding:2px 8px;">
+                        ${optionsHtml}
+                    </select>
+                </div>
+            </div>
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;">
+                <div>
+                    <label style="font-size:12px;color:var(--gray-600);">主标题:</label>
+                    <input type="text" class="form-input scene-title-input" value="${escapeHtml(sc.title || '')}" style="height:32px;font-size:13px;">
+                </div>
+                <div>
+                    <label style="font-size:12px;color:var(--gray-600);">胶囊标签:</label>
+                    <input type="text" class="form-input scene-tag-input" value="${escapeHtml(sc.tag || '')}" style="height:32px;font-size:13px;">
+                </div>
+            </div>
+            <div>
+                <label style="font-size:12px;color:var(--gray-600);">配音与字幕台词 (精确发音):</label>
+                <textarea class="form-textarea scene-text-input" rows="3" style="font-size:13px;">${escapeHtml(sc.narration_text || '')}</textarea>
+            </div>
+        `;
+        container.appendChild(card);
+    });
+
+    modal.classList.add('active');
+}
+
+function closeAnimEditAllModal() {
+    const modal = document.getElementById('animEditAllModal');
+    if (modal) modal.classList.remove('active');
+}
+
+async function saveAnimScenesEdits() {
+    if (!currentAnimJobId) {
+        showToast('当前没有动画工程', 'warn');
+        return;
+    }
+
+    const cards = document.querySelectorAll('#animEditScenesContainer .anim-edit-item-card');
+    const scenes = [];
+
+    cards.forEach(c => {
+        const sIdx = parseInt(c.dataset.sceneIndex, 10);
+        const type = c.querySelector('.scene-type-input').value;
+        const title = c.querySelector('.scene-title-input').value.trim();
+        const tag = c.querySelector('.scene-tag-input').value.trim();
+        const text = c.querySelector('.scene-text-input').value.trim();
+
+        scenes.push({
+            scene_index: sIdx,
+            type,
+            title,
+            tag,
+            narration_text: text
+        });
+    });
+
+    closeAnimEditAllModal();
+    showToast('正在更新分镜配置并启动重新渲染...', 'info');
+
+    try {
+        const resp = await fetch(`/api/animation/jobs/${currentAnimJobId}/update-scenes`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ scenes })
+        });
+        const data = await resp.json();
+        if (!resp.ok || !data.success) throw new Error(data.error || '更新失败');
+
+        // 重新调用重新渲染接口
+        await rerenderAnimFromStoryboard();
+    } catch (e) {
+        showToast(e.message || '分镜保存失败', 'error');
+    }
+}
+
+async function rerenderAnimFromStoryboard() {
+    if (!currentAnimJobId) {
+        showToast('当前没有动画工程', 'warn');
+        return;
+    }
+
+    // 展开进度卡片
+    document.getElementById('animProgressCard').classList.remove('hidden');
+    document.getElementById('animProgressBarFill').style.width = '15%';
+    document.getElementById('animProgressPercent').textContent = '15%';
+    document.getElementById('animProgressMessage').textContent = '正在根据最新剧本重新合成音频与流式渲染...';
+
+    try {
+        const resp = await fetch(`/api/animation/jobs/${currentAnimJobId}/rerender`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({})
+        });
+        const data = await resp.json();
+        if (!resp.ok || !data.success) throw new Error(data.error || '重新渲染失败');
+
+        showToast('重新渲染任务已提交！', 'success');
+        startAnimPolling(currentAnimJobId);
+    } catch (e) {
+        showToast(e.message || '重新渲染失败', 'error');
+    }
+}
+
+function auditionAnimVoice() {
+    const voice = document.getElementById('animVoiceSelect').value;
+    if (!voice) {
+        showToast('请选择要试听的音色', 'warn');
+        return;
+    }
+    auditionVoice(voice);
+}
+
+function copyAnimVideoLink() {
+    const player = document.getElementById('animVideoPlayer');
+    if (!player || !player.src) {
+        showToast('成片链接尚未就绪', 'warn');
+        return;
+    }
+    navigator.clipboard.writeText(player.src).then(() => {
+        showToast('视频成片链接已复制到剪贴板！', 'success');
+    }).catch(() => {
+        showToast(player.src, 'info');
+    });
+}
+

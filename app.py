@@ -23,6 +23,7 @@ from flask import (
 )
 from dotenv import load_dotenv
 from video_mvp import register_video_mvp_routes
+from animation_mvp import register_animation_mvp_routes
 
 load_dotenv()
 
@@ -34,6 +35,16 @@ if ffmpeg_bin and Path(ffmpeg_bin).exists():
 for p in [r"D:\ffmpeg\bin", r"C:\ffmpeg\bin", r"D:\web\videotool"]:
     if (Path(p) / "ffmpeg.exe").exists() and p not in ffmpeg_candidate_dirs:
         ffmpeg_candidate_dirs.append(p)
+
+try:
+    import imageio_ffmpeg
+    _img_ff = imageio_ffmpeg.get_ffmpeg_exe()
+    if _img_ff and Path(_img_ff).exists():
+        _pdir = str(Path(_img_ff).parent)
+        if _pdir not in ffmpeg_candidate_dirs:
+            ffmpeg_candidate_dirs.append(_pdir)
+except Exception:
+    pass
 
 for fdir in ffmpeg_candidate_dirs:
     if fdir not in os.environ.get("PATH", ""):
@@ -618,6 +629,16 @@ def convert_to_mp3(wav_bytes: bytes) -> bytes:
 
 
 register_video_mvp_routes(app, {
+    "output_dir": OUTPUT_DIR,
+    "get_cloned_voice_sample": get_cloned_voice_sample,
+    "call_mimo_tts": call_mimo_tts,
+    "load_cloned_voices": load_cloned_voices,
+    "load_designed_voices": load_designed_voices,
+    "get_designed_voice": get_designed_voice,
+    "builtin_voices": BUILTIN_VOICES,
+})
+
+register_animation_mvp_routes(app, {
     "output_dir": OUTPUT_DIR,
     "get_cloned_voice_sample": get_cloned_voice_sample,
     "call_mimo_tts": call_mimo_tts,

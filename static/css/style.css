@@ -1897,5 +1897,173 @@ a:hover { color: var(--blue-700); }
   flex-shrink: 0;
 }
 
+/* ============================================================
+   文生动画 (Text-to-Animation) 专属样式
+   ============================================================ */
+
+.theme-selector-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 12px;
+  margin-top: 6px;
+}
+
+.theme-card {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 14px;
+  border: 1.5px solid var(--gray-200);
+  border-radius: var(--radius);
+  background: white;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  user-select: none;
+}
+
+.theme-card:hover {
+  border-color: var(--blue-500);
+  transform: translateY(-1px);
+}
+
+.theme-card.active {
+  border-color: var(--blue-600);
+  background: var(--blue-50);
+  box-shadow: 0 0 0 1px var(--blue-600);
+}
+
+.theme-card-dot {
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.theme-card-body {
+  flex: 1;
+  min-width: 0;
+}
+
+.theme-card-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--gray-900);
+}
+
+.theme-card-desc {
+  font-size: 11px;
+  color: var(--gray-500);
+  margin-top: 2px;
+}
+
+.anim-token-pill {
+  font-size: 12px;
+  background: #f0fdf4;
+  color: #166534;
+  border: 1px solid #bbf7d0;
+  padding: 4px 10px;
+  border-radius: 20px;
+  font-weight: 500;
+}
+
+/* 分镜剧本网格 */
+.anim-storyboard-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+  gap: 16px;
+}
+
+.anim-scene-card {
+  border: 1px solid var(--gray-200);
+  border-radius: var(--radius);
+  background: white;
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  transition: all 0.2s ease;
+}
+
+.anim-scene-card:hover {
+  border-color: var(--blue-500);
+  box-shadow: var(--shadow-md);
+}
+
+.anim-scene-card-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.anim-scene-index-badge {
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--gray-600);
+  background: var(--gray-100);
+  padding: 2px 8px;
+  border-radius: 4px;
+}
+
+.anim-scene-type-tag {
+  font-size: 11px;
+  font-weight: 600;
+  padding: 2px 8px;
+  border-radius: 12px;
+}
+
+.anim-scene-type-tag.cards_grid { background: #e0f2fe; color: #0369a1; }
+.anim-scene-type-tag.comparison { background: #fef2f2; color: #b91c1c; }
+.anim-scene-type-tag.data_chart { background: #fef9c3; color: #a16207; }
+.anim-scene-type-tag.steps_flow { background: #ecfdf5; color: #047857; }
+.anim-scene-type-tag.metrics_grid { background: #fdf4ff; color: #a21caf; }
+.anim-scene-type-tag.code_terminal { background: #f1f5f9; color: #334155; }
+.anim-scene-type-tag.quote_focus { background: #fff7ed; color: #c2410c; }
+.anim-scene-type-tag.call_to_action { background: #eff6ff; color: #1d4ed8; }
+
+.anim-scene-title {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--gray-900);
+}
+
+.anim-scene-subtitle {
+  font-size: 12px;
+  color: var(--gray-500);
+}
+
+.anim-scene-text {
+  font-size: 13px;
+  color: var(--gray-700);
+  line-height: 1.5;
+  background: var(--gray-50);
+  padding: 8px 10px;
+  border-radius: 6px;
+  max-height: 80px;
+  overflow-y: auto;
+}
+
+.anim-scene-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-top: auto;
+  padding-top: 8px;
+  border-top: 1px dashed var(--gray-200);
+  font-size: 12px;
+  color: var(--gray-500);
+}
+
+.anim-edit-item-card {
+  border: 1px solid var(--gray-200);
+  border-radius: var(--radius);
+  padding: 14px;
+  background: var(--gray-50);
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+
 
 
