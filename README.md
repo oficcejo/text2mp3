@@ -3,15 +3,15 @@
 <p align="left">
   <a href="https://github.com/oficcejo/text2mp3"><img src="https://img.shields.io/github/stars/oficcejo/text2mp3?style=social" alt="GitHub stars"></a>
   <a href="https://github.com/oficcejo/text2mp3"><img src="https://img.shields.io/github/forks/oficcejo/text2mp3?style=social" alt="GitHub forks"></a>
+  <a href="https://space.bilibili.com/1468337275"><img src="https://img.shields.io/badge/Bilibili-关注作者UP-fb7299?logo=bilibili&logoColor=white" alt="Bilibili"></a>
   <a href="https://github.com/oficcejo/text2mp3/blob/main/LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="License"></a>
   <img src="https://img.shields.io/badge/Python-3.10+-3776AB?logo=python&logoColor=white" alt="Python">
 </p>
 
-> 🌟 **欢迎前往 GitHub 仓库点 Star ⭐️ 支持！**
+> 🌟 **欢迎关注与支持作者！**
 > 
-> 🔗 **项目开源仓库地址**：[https://github.com/oficcejo/text2mp3](https://github.com/oficcejo/text2mp3)
-> 
-> 如果您觉得这个项目对您有帮助，请点击仓库右上角 **Star ⭐️** 给予鼓励，您的支持是项目持续升级的最大动力！
+> 📺 **作者 B站主页**：[https://space.bilibili.com/1468337275](https://space.bilibili.com/1468337275) （获取最新 AI 教程、音视频实战与工具玩法，欢迎关注支持！）  
+> 🔗 **GitHub 开源仓库**：[https://github.com/oficcejo/text2mp3](https://github.com/oficcejo/text2mp3) （如果觉得好用，请点击右上角 **Star ⭐️** 鼓励支持！）
 
 一个基于 Flask 的本地 Web 工具，支持：
 
