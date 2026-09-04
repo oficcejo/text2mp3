@@ -17,7 +17,9 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
+import math
 import requests
+import numpy as np
 import soundfile as sf
 from flask import jsonify, request, send_file
 
@@ -441,6 +443,40 @@ def register_video_mvp_routes(app, deps: Dict[str, Any]):
             )
         return "mimo-v2.5-tts", voice or "mimo_default", ""
 
+    def smooth_audio_endpoints(path: Path, fade_in_ms: float = 20.0, fade_out_ms: float = 30.0) -> None:
+        """
+        消除音频首尾的突变冲击（直流偏置与瞬态阶跃脉冲），杜绝分镜切歌时的“噗/啪”爆音。
+        """
+        try:
+            data, sr = sf.read(str(path))
+            if data.size == 0:
+                return
+            # 1. 消除直流偏置 (DC offset)
+            if data.ndim == 1:
+                data = data - np.mean(data)
+            else:
+                data = data - np.mean(data, axis=0)
+
+            # 2. 毫秒级边缘平滑淡入淡出（20ms淡入，30ms淡出），波形平滑归零
+            fade_in_samples = min(len(data), int(fade_in_ms * sr / 1000.0))
+            fade_out_samples = min(len(data), int(fade_out_ms * sr / 1000.0))
+            if fade_in_samples > 0:
+                ramp_in = np.linspace(0.0, 1.0, fade_in_samples)
+                if data.ndim == 1:
+                    data[:fade_in_samples] *= ramp_in
+                else:
+                    data[:fade_in_samples] *= ramp_in[:, None]
+            if fade_out_samples > 0:
+                ramp_out = np.linspace(1.0, 0.0, fade_out_samples)
+                if data.ndim == 1:
+                    data[-fade_out_samples:] *= ramp_out
+                else:
+                    data[-fade_out_samples:] *= ramp_out[:, None]
+
+            sf.write(str(path), data, sr)
+        except Exception as _exc:
+            print(f"平滑音频边缘异常: {_exc}", flush=True)
+
     def generate_scene_audio(scene: Dict[str, Any], job_dir: Path, voice: str) -> Tuple[str, float, Optional[str]]:
         audio_path = job_dir / "audio" / f"scene_{scene['scene_index']:03d}.wav"
         warning = None
@@ -463,6 +499,7 @@ def register_video_mvp_routes(app, deps: Dict[str, Any]):
                 )
                 audio_path.parent.mkdir(parents=True, exist_ok=True)
                 audio_path.write_bytes(audio_bytes)
+                smooth_audio_endpoints(audio_path)
                 warning = None
                 break
             except Exception as exc:
@@ -523,6 +560,50 @@ def register_video_mvp_routes(app, deps: Dict[str, Any]):
         output_path.write_text("\n".join(lines), encoding="utf-8")
         return str(output_path.relative_to(output_dir.parent if output_dir.parent.exists() else Path.cwd()))
 
+    def build_seamless_audio_track(job_dir: Path, storyboard: Dict[str, Any], fps: int) -> Optional[Path]:
+        """
+        构建整片无缝连续音轨：
+        1. 逐分镜读取音频，根据分镜帧数计算采样点，补充平滑静音尾，确保音画与字幕 100% 逐帧对齐；
+        2. 全片音频在 PCM 阶段平滑拼接，统一进行一次 AAC 编码，彻底杜绝切片拼接引起的 packet 缝隙与转场“噗”爆音。
+        """
+        audio_segments = []
+        target_sr = 24000
+        for scene in storyboard.get("scenes", []):
+            wav_rel = scene.get("audio_file")
+            wav_path = (job_dir / wav_rel) if wav_rel else None
+            if wav_path and wav_path.exists():
+                data, sr = sf.read(str(wav_path))
+                target_sr = sr
+            else:
+                data = np.zeros(int(scene.get("estimated_duration_sec", 4.0) * target_sr), dtype=np.float32)
+
+            if data.ndim > 1:
+                data = data.mean(axis=1)
+
+            duration = float(scene.get("actual_duration_sec") or scene.get("estimated_duration_sec", 4.0))
+            target_samples = int(round(duration * target_sr))
+
+            if len(data) < target_samples:
+                padded = np.zeros(target_samples, dtype=data.dtype)
+                padded[:len(data)] = data
+                data = padded
+            elif len(data) > target_samples:
+                data = data[:target_samples]
+                tail_len = min(len(data), int(0.02 * target_sr))
+                if tail_len > 0:
+                    data[-tail_len:] *= np.linspace(1.0, 0.0, tail_len)
+
+            audio_segments.append(data)
+
+        if not audio_segments:
+            return None
+
+        full_audio = np.concatenate(audio_segments)
+        output_wav = job_dir / "video" / "full_audio.wav"
+        output_wav.parent.mkdir(parents=True, exist_ok=True)
+        sf.write(str(output_wav), full_audio, target_sr)
+        return output_wav
+
     def render_video(job_dir: Path, storyboard: Dict[str, Any], settings: Dict[str, Any]) -> Tuple[Optional[str], Optional[str]]:
         ffmpeg = ffmpeg_binary()
         if not ffmpeg:
@@ -539,12 +620,15 @@ def register_video_mvp_routes(app, deps: Dict[str, Any]):
             h = int(settings.get("height", 720))
             fps = int(settings.get("fps", 24))
 
+            # 1. 预先构建整体无缝连续音轨（彻底杜绝分镜切歌爆音与时间轴漂移）
+            full_audio_path = build_seamless_audio_track(job_dir, storyboard, fps)
+
+            # 2. 逐分镜生成纯视频流动画片段（去除各自独立的 aac 编码碎片，加快渲染并杜绝 packet 缝隙）
             for idx, scene in enumerate(storyboard["scenes"]):
                 frame_path = job_dir / scene["frame_file"]
-                audio_path = job_dir / scene["audio_file"]
                 part_path = parts_dir / f"scene_{scene['scene_index']:03d}.mp4"
                 duration = max(1.0, float(scene.get("actual_duration_sec") or scene["estimated_duration_sec"]))
-                total_frames = max(24, int(duration * fps))
+                total_frames = max(24, int(round(duration * fps)))
                 step = round(0.12 / total_frames, 5)
 
                 # 动态交替运镜效果（奇数分镜缓推放大，偶数分镜平缓拉远，实现生动镜头感）
@@ -555,40 +639,31 @@ def register_video_mvp_routes(app, deps: Dict[str, Any]):
 
                 vf_complex = f"[0:v]scale={w}:{h}:force_original_aspect_ratio=increase,crop={w}:{h},{motion_vf}[v]"
 
-                # 尝试带微运镜效果生成片段（不加 -loop 1，由 zoompan 依据 d=total_frames 生成动态帧序列）
                 cmd = [
                     ffmpeg,
                     "-y",
                     "-i", str(frame_path),
-                    "-i", str(audio_path),
                     "-filter_complex", vf_complex,
                     "-map", "[v]",
-                    "-map", "1:a",
-                    "-t", f"{duration:.2f}",
+                    "-t", f"{duration:.3f}",
                     "-c:v", "libx264",
                     "-pix_fmt", "yuv420p",
-                    "-c:a", "aac",
-                    "-shortest",
                     str(part_path),
                 ]
                 try:
                     subprocess.run(cmd, check=True, capture_output=True)
                 except subprocess.CalledProcessError as _cpe:
                     print(f"运镜渲染异常 (Scene {scene['scene_index']}): {_cpe.stderr.decode('utf-8', errors='ignore')[-300:] if _cpe.stderr else ''}，回退静态画面", flush=True)
-                    # 运镜滤镜兜底回退为普通静态生成
                     cmd_fallback = [
                         ffmpeg,
                         "-y",
                         "-loop", "1",
                         "-i", str(frame_path),
-                        "-i", str(audio_path),
-                        "-t", f"{duration:.2f}",
+                        "-t", f"{duration:.3f}",
                         "-vf", f"scale={w}:{h}:force_original_aspect_ratio=increase,crop={w}:{h}",
                         "-r", str(fps),
                         "-c:v", "libx264",
                         "-pix_fmt", "yuv420p",
-                        "-c:a", "aac",
-                        "-shortest",
                         str(part_path),
                     ]
                     subprocess.run(cmd_fallback, check=True, capture_output=True)
@@ -601,18 +676,18 @@ def register_video_mvp_routes(app, deps: Dict[str, Any]):
                 concat_lines.append(f"file '{part_abs}'")
             concat_file.write_text("\n".join(concat_lines), encoding="utf-8")
             
-            final_raw_path = job_dir / "video" / "final_raw.mp4"
+            raw_video_path = job_dir / "video" / "raw_video.mp4"
             final_path = job_dir / "video" / "final.mp4"
 
-            # 第一步：快速拼接视频流
+            # 3. 纯视频无损极速拼接
             cmd_concat = [
                 ffmpeg,
                 "-y",
                 "-f", "concat",
                 "-safe", "0",
                 "-i", str(concat_file),
-                "-c", "copy",
-                str(final_raw_path),
+                "-c:v", "copy",
+                str(raw_video_path),
             ]
             result = subprocess.run(cmd_concat, capture_output=True)
             if result.returncode != 0:
@@ -623,12 +698,12 @@ def register_video_mvp_routes(app, deps: Dict[str, Any]):
                     "-safe", "0",
                     "-i", str(concat_file),
                     "-c:v", "libx264",
-                    "-c:a", "aac",
-                    str(final_raw_path),
+                    "-pix_fmt", "yuv420p",
+                    str(raw_video_path),
                 ]
                 subprocess.run(cmd_concat_reencode, check=True, capture_output=True)
 
-            # 第二步：自动硬烧录中文字幕
+            # 4. 合成整体连续音轨并硬烧录中文字幕
             srt_path = job_dir / "subtitles" / "subtitles.srt"
             burned_subtitles = False
 
@@ -639,25 +714,47 @@ def register_video_mvp_routes(app, deps: Dict[str, Any]):
                     cmd_burn = [
                         ffmpeg,
                         "-y",
-                        "-i", str(final_raw_path),
+                        "-i", str(raw_video_path),
+                    ]
+                    if full_audio_path and full_audio_path.exists():
+                        cmd_burn.extend(["-i", str(full_audio_path)])
+                    cmd_burn.extend([
                         "-vf", sub_vf,
+                        "-map", "0:v:0",
+                    ])
+                    if full_audio_path and full_audio_path.exists():
+                        cmd_burn.extend(["-map", "1:a:0", "-c:a", "aac", "-b:a", "192k"])
+                    cmd_burn.extend([
                         "-c:v", "libx264",
                         "-pix_fmt", "yuv420p",
-                        "-c:a", "copy",
+                        "-shortest",
                         str(final_path),
-                    ]
+                    ])
                     res_burn = subprocess.run(cmd_burn, capture_output=True)
                     if res_burn.returncode == 0:
                         burned_subtitles = True
-                        final_raw_path.unlink(missing_ok=True)
                 except Exception as _sub_err:
-                    print(f"烧录字幕异常，保留原视频: {_sub_err}", flush=True)
+                    print(f"烧录字幕异常，回退纯合成: {_sub_err}", flush=True)
 
             if not burned_subtitles:
-                if final_raw_path.exists():
-                    if final_path.exists():
-                        final_path.unlink(missing_ok=True)
-                    final_raw_path.rename(final_path)
+                cmd_mux = [
+                    ffmpeg,
+                    "-y",
+                    "-i", str(raw_video_path),
+                ]
+                if full_audio_path and full_audio_path.exists():
+                    cmd_mux.extend(["-i", str(full_audio_path)])
+                cmd_mux.extend([
+                    "-map", "0:v:0",
+                    "-c:v", "copy",
+                ])
+                if full_audio_path and full_audio_path.exists():
+                    cmd_mux.extend(["-map", "1:a:0", "-c:a", "aac", "-b:a", "192k"])
+                cmd_mux.extend([
+                    "-shortest",
+                    str(final_path),
+                ])
+                subprocess.run(cmd_mux, check=True, capture_output=True)
 
             return str(final_path.relative_to(job_dir)).replace("\\", "/"), None
         except Exception as exc:
@@ -848,15 +945,18 @@ def register_video_mvp_routes(app, deps: Dict[str, Any]):
                         detail_message=f"分镜配音合成中 ({done_audios}/{total_scenes})...",
                     )
 
-            # 4. 按顺序对齐配音时长与时间轴
+            # 4. 按顺序对齐配音时长与时间轴（帧级对齐，确保音画与字幕 100% 毫秒级锁定）
             cursor = 0.0
+            fps = int(settings.get("fps", 24))
             for idx, scene in enumerate(storyboard["scenes"], start=1):
                 audio_file, actual_duration_sec, warning = audio_results[scene["scene_index"]]
                 scene["audio_file"] = audio_file
-                scene["actual_duration_sec"] = actual_duration_sec
-                scene["start_sec"] = round(cursor, 2)
-                cursor += actual_duration_sec
-                scene["end_sec"] = round(cursor, 2)
+                frames = max(24, math.ceil(actual_duration_sec * fps))
+                scene_duration = round(frames / fps, 3)
+                scene["actual_duration_sec"] = scene_duration
+                scene["start_sec"] = round(cursor, 3)
+                cursor += scene_duration
+                scene["end_sec"] = round(cursor, 3)
                 if warning:
                     warnings.append(f"Scene {idx}: {warning}")
 
