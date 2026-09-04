@@ -381,10 +381,24 @@ def register_video_mvp_routes(app, deps: Dict[str, Any]):
         joined = "; ".join(narratives[:2])
         return sanitize_image_prompt(f"Chinese comic storyboard scene, cinematic composition, {style} visual style. {joined}. Dynamic dramatic lighting, rich detailed environment, consistent art style, no speech bubbles, no text, no watermark, 16:9 widescreen.")
 
-    def fetch_image_bytes_from_openai(prompt: str) -> Optional[bytes]:
+    def resolve_image_size(aspect_ratio: str, custom_size: str = "") -> str:
+        custom_size = (custom_size or "").strip().lower()
+        if custom_size and custom_size not in ("1024x1024", "1024", "auto"):
+            return custom_size
+        aspect = (aspect_ratio or "16:9").strip()
+        if aspect in ("16:9", "landscape", "horizontal", "wide"):
+            return "1792x1024"
+        elif aspect in ("9:16", "portrait", "vertical"):
+            return "1024x1792"
+        return "1024x1024"
+
+    def fetch_image_bytes_from_openai(prompt: str, aspect_ratio: str = "16:9") -> Optional[bytes]:
         openai_settings = get_openai_settings()
         if not openai_settings["api_key"]:
             return None
+
+        # 智能匹配适合视频宽高比的生图尺寸（16:9 -> 1792x1024，9:16 -> 1024x1792，1:1 -> 1024x1024）
+        img_size = resolve_image_size(aspect_ratio, openai_settings.get("image_size"))
 
         # 检查代理设置：优先使用环境变量，如未配置则自适应检测本机运行的常用代理端口
         proxy_url = os.getenv("OPENAI_PROXY", "").strip()
@@ -408,7 +422,7 @@ def register_video_mvp_routes(app, deps: Dict[str, Any]):
         payload = {
             "model": openai_settings["image_model"],
             "prompt": clean_prompt,
-            "size": openai_settings["image_size"],
+            "size": img_size,
             "quality": openai_settings["image_quality"],
             "n": 1,
         }
@@ -438,7 +452,11 @@ def register_video_mvp_routes(app, deps: Dict[str, Any]):
                 if item.get("b64_json"):
                     img_bytes = base64.b64decode(item["b64_json"])
                 elif item.get("url"):
-                    img_resp = requests.get(item["url"], timeout=(20, 120), proxies=proxies)
+                    # 下载生图，优先使用代理，若失败尝试直连
+                    try:
+                        img_resp = requests.get(item["url"], timeout=(20, 120), proxies=proxies)
+                    except Exception:
+                        img_resp = requests.get(item["url"], timeout=(20, 120))
                     img_resp.raise_for_status()
                     img_bytes = img_resp.content
 
@@ -463,19 +481,51 @@ def register_video_mvp_routes(app, deps: Dict[str, Any]):
         width: int,
         height: int,
     ) -> None:
-        del subtitle_text, title, width, height
+        del subtitle_text, title
         frame_path.parent.mkdir(parents=True, exist_ok=True)
-        if source_image_path.suffix.lower() == ".png":
-            shutil.copyfile(source_image_path, frame_path)
-        else:
-            write_simple_png(frame_path, 1280, 720, (224, 228, 233))
+        try:
+            from PIL import ImageFilter
+            src_img = Image.open(str(source_image_path))
+            if src_img.mode != "RGB":
+                src_img = src_img.convert("RGB")
+            src_w, src_h = src_img.size
+            src_ratio = src_w / float(src_h)
+            target_ratio = width / float(height)
+
+            # 如果图片比例与视频目标比例基本一致（差异在 18% 以内，例如 1792x1024 与 16:9 几乎完全契合）
+            if abs(src_ratio - target_ratio) < 0.18:
+                final_frame = src_img.resize((width, height), Image.Resampling.LANCZOS)
+            else:
+                # 比例差异较大时（例如方图 1:1 或竖图 9:16 置于 16:9 视频中）
+                # 采用专业视频常用的【高斯模糊氛围背景 + 居中完整原图】方案，100% 完整保留画面，绝不裁切主体与人头！
+                bg = src_img.resize((width, height), Image.Resampling.LANCZOS).filter(ImageFilter.GaussianBlur(radius=25))
+                dim = Image.new("RGB", (width, height), (0, 0, 0))
+                bg = Image.blend(bg, dim, 0.35)
+
+                scale = min(width / float(src_w), height / float(src_h))
+                fg_w = max(1, int(src_w * scale))
+                fg_h = max(1, int(src_h * scale))
+                fg = src_img.resize((fg_w, fg_h), Image.Resampling.LANCZOS)
+
+                pos_x = (width - fg_w) // 2
+                pos_y = (height - fg_h) // 2
+                bg.paste(fg, (pos_x, pos_y))
+                final_frame = bg
+
+            final_frame.save(str(frame_path), "PNG")
+        except Exception:
+            if source_image_path.suffix.lower() == ".png":
+                shutil.copyfile(source_image_path, frame_path)
+            else:
+                write_simple_png(frame_path, width, height, (36, 40, 48))
 
     def generate_group_image(group_index: int, scenes: List[Dict[str, Any]], job_dir: Path, settings: Dict[str, Any]) -> Tuple[str, bool]:
         width = settings["width"]
         height = settings["height"]
+        aspect_ratio = settings.get("aspect_ratio", "16:9")
         image_path = job_dir / "images" / f"group_{group_index:03d}.png"
         prompt = build_group_prompt(group_index, scenes, settings["style"])
-        image_bytes = fetch_image_bytes_from_openai(prompt)
+        image_bytes = fetch_image_bytes_from_openai(prompt, aspect_ratio=aspect_ratio)
         is_ai = False
         if image_bytes:
             image_path.parent.mkdir(parents=True, exist_ok=True)
@@ -518,9 +568,10 @@ def register_video_mvp_routes(app, deps: Dict[str, Any]):
     def generate_scene_image(scene: Dict[str, Any], job_dir: Path, settings: Dict[str, Any]) -> Tuple[str, str]:
         width = settings["width"]
         height = settings["height"]
+        aspect_ratio = settings.get("aspect_ratio", "16:9")
         image_path = job_dir / "images" / f"scene_{scene['scene_index']:03d}.png"
         frame_path = job_dir / "frames" / f"scene_{scene['scene_index']:03d}.png"
-        image_bytes = fetch_image_bytes_from_openai(scene["image_prompt"])
+        image_bytes = fetch_image_bytes_from_openai(scene["image_prompt"], aspect_ratio=aspect_ratio)
         if image_bytes:
             image_path.parent.mkdir(parents=True, exist_ok=True)
             image_path.write_bytes(image_bytes)
@@ -795,13 +846,13 @@ def register_video_mvp_routes(app, deps: Dict[str, Any]):
                 part_path = parts_dir / f"scene_{scene['scene_index']:03d}.mp4"
                 duration = max(1.0, float(scene.get("actual_duration_sec") or scene["estimated_duration_sec"]))
                 total_frames = max(24, int(round(duration * fps)))
-                step = round(0.12 / total_frames, 5)
+                step = round(0.06 / total_frames, 5)
 
-                # 动态交替运镜效果（奇数分镜缓推放大，偶数分镜平缓拉远，实现生动镜头感）
+                # 动态交替运镜效果（适度缓推与轻微拉远，运镜平稳生动，绝不推太近导致画面被裁切）
                 if idx % 2 == 0:
-                    motion_vf = f"zoompan=z='min(zoom+{step},1.15)':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d={total_frames}:s={w}x{h}:fps={fps}"
+                    motion_vf = f"zoompan=z='min(zoom+{step},1.06)':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d={total_frames}:s={w}x{h}:fps={fps}"
                 else:
-                    motion_vf = f"zoompan=z='max(1.15-{step}*on,1.0)':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d={total_frames}:s={w}x{h}:fps={fps}"
+                    motion_vf = f"zoompan=z='max(1.06-{step}*on,1.0)':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d={total_frames}:s={w}x{h}:fps={fps}"
 
                 vf_complex = f"[0:v]scale={w}:{h}:force_original_aspect_ratio=increase,crop={w}:{h},{motion_vf}[v]"
 
