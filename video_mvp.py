@@ -10,6 +10,8 @@ import uuid
 import wave
 import zlib
 import struct
+import time
+import random
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -523,24 +525,41 @@ def register_video_mvp_routes(app, deps: Dict[str, Any]):
         warning = None
         model, voice_name, voice_sample_b64 = build_voice_payload(voice)
 
-        try:
-            audio_bytes, _ = call_mimo_tts(
-                model=model,
-                text=scene["narration_text"],
-                voice=voice_name,
-                style_instruction="",
-                audio_format="wav",
-                stream=False,
-                voice_audio_base64=voice_sample_b64,
-                voice_audio_mime="audio/wav",
-                progress=None,
-                voice_info=None,
-            )
-            audio_path.parent.mkdir(parents=True, exist_ok=True)
-            audio_path.write_bytes(audio_bytes)
-        except Exception as exc:
-            warning = f"TTS fallback used: {exc}"
-            write_silence_wav(audio_path, scene["estimated_duration_sec"])
+        max_retries = 4
+        for attempt in range(max_retries):
+            try:
+                audio_bytes, _ = call_mimo_tts(
+                    model=model,
+                    text=scene["narration_text"],
+                    voice=voice_name,
+                    style_instruction="",
+                    audio_format="wav",
+                    stream=False,
+                    voice_audio_base64=voice_sample_b64,
+                    voice_audio_mime="audio/wav",
+                    progress=None,
+                    voice_info=None,
+                )
+                audio_path.parent.mkdir(parents=True, exist_ok=True)
+                audio_path.write_bytes(audio_bytes)
+                warning = None
+                break
+            except Exception as exc:
+                err_msg = str(exc)
+                is_rate_limit = "429" in err_msg or "Too many requests" in err_msg or "limitation" in err_msg
+                if is_rate_limit and attempt < max_retries - 1:
+                    wait_sec = 2.5 * (2 ** attempt) + random.uniform(0.5, 1.5)
+                    print(f"[TTS Scene {scene['scene_index']}] 命中频控 (429)，等待 {wait_sec:.1f} 秒后重试 (第 {attempt+1}/{max_retries} 次)...", flush=True)
+                    time.sleep(wait_sec)
+                    continue
+                elif attempt < 2 and ("timeout" in err_msg.lower() or "connection" in err_msg.lower()):
+                    time.sleep(2.0)
+                    continue
+                else:
+                    warning = f"TTS fallback used: {exc}"
+                    print(f"[TTS Scene {scene['scene_index']}] 配音最终失败: {exc}，使用静音兜底", flush=True)
+                    write_silence_wav(audio_path, scene["estimated_duration_sec"])
+                    break
 
         duration = audio_duration(audio_path)
         if duration <= 0:
@@ -598,27 +617,33 @@ def register_video_mvp_routes(app, deps: Dict[str, Any]):
             w = int(settings.get("width", 1280))
             h = int(settings.get("height", 720))
             fps = int(settings.get("fps", 24))
-            zoom_vf = (
-                f"scale={w}:{h}:force_original_aspect_ratio=increase,crop={w}:{h},"
-                f"zoompan=z='min(zoom+0.0006,1.06)':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d=1:s={w}x{h}:fps={fps}"
-            )
 
-            for scene in storyboard["scenes"]:
+            for idx, scene in enumerate(storyboard["scenes"]):
                 frame_path = job_dir / scene["frame_file"]
                 audio_path = job_dir / scene["audio_file"]
                 part_path = parts_dir / f"scene_{scene['scene_index']:03d}.mp4"
                 duration = max(1.0, float(scene.get("actual_duration_sec") or scene["estimated_duration_sec"]))
-                
-                # 尝试带微运镜效果生成片段
+                total_frames = max(24, int(duration * fps))
+                step = round(0.12 / total_frames, 5)
+
+                # 动态交替运镜效果（奇数分镜缓推放大，偶数分镜平缓拉远，实现生动镜头感）
+                if idx % 2 == 0:
+                    motion_vf = f"zoompan=z='min(zoom+{step},1.15)':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d={total_frames}:s={w}x{h}:fps={fps}"
+                else:
+                    motion_vf = f"zoompan=z='max(1.15-{step}*on,1.0)':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d={total_frames}:s={w}x{h}:fps={fps}"
+
+                vf_complex = f"[0:v]scale={w}:{h}:force_original_aspect_ratio=increase,crop={w}:{h},{motion_vf}[v]"
+
+                # 尝试带微运镜效果生成片段（不加 -loop 1，由 zoompan 依据 d=total_frames 生成动态帧序列）
                 cmd = [
                     ffmpeg,
                     "-y",
-                    "-loop", "1",
                     "-i", str(frame_path),
                     "-i", str(audio_path),
+                    "-filter_complex", vf_complex,
+                    "-map", "[v]",
+                    "-map", "1:a",
                     "-t", f"{duration:.2f}",
-                    "-vf", zoom_vf,
-                    "-r", str(fps),
                     "-c:v", "libx264",
                     "-pix_fmt", "yuv420p",
                     "-c:a", "aac",
@@ -627,7 +652,8 @@ def register_video_mvp_routes(app, deps: Dict[str, Any]):
                 ]
                 try:
                     subprocess.run(cmd, check=True, capture_output=True)
-                except subprocess.CalledProcessError:
+                except subprocess.CalledProcessError as _cpe:
+                    print(f"运镜渲染异常 (Scene {scene['scene_index']}): {_cpe.stderr.decode('utf-8', errors='ignore')[-300:] if _cpe.stderr else ''}，回退静态画面", flush=True)
                     # 运镜滤镜兜底回退为普通静态生成
                     cmd_fallback = [
                         ffmpeg,
@@ -636,6 +662,7 @@ def register_video_mvp_routes(app, deps: Dict[str, Any]):
                         "-i", str(frame_path),
                         "-i", str(audio_path),
                         "-t", f"{duration:.2f}",
+                        "-vf", f"scale={w}:{h}:force_original_aspect_ratio=increase,crop={w}:{h}",
                         "-r", str(fps),
                         "-c:v", "libx264",
                         "-pix_fmt", "yuv420p",
@@ -822,21 +849,28 @@ def register_video_mvp_routes(app, deps: Dict[str, Any]):
             for scene in storyboard["scenes"]:
                 scene["frame_file"] = generate_scene_frame(scene, group_map[scene["scene_index"]], job_dir, settings)
 
-            # 3. 多线程并发合成各分镜配音音频
+            # 3. 合成各分镜配音音频
             voice_choice = config.get("voice", settings["voice"])
+            is_clone = voice_choice.startswith("cloned:")
+            # 克隆音色需传输样本且服务端严格限制并发，采用串行以确保 100% 成功且避免触发 429
+            # 官方预置音色并发限制较宽，采用最大 2 并发
+            max_audio_workers = 1 if is_clone else min(2, total_scenes)
+
             update_manifest(
                 job_dir,
                 status="generating_assets",
                 progress=46,
-                detail_message=f"正在并发合成 {total_scenes} 个分镜配音...",
+                detail_message=f"正在合成 {total_scenes} 个分镜配音...",
             )
 
             audio_results = {}
-            with ThreadPoolExecutor(max_workers=min(4, total_scenes)) as audio_executor:
-                future_to_scene = {
-                    audio_executor.submit(generate_scene_audio, scene, job_dir, voice_choice): scene
-                    for scene in storyboard["scenes"]
-                }
+            with ThreadPoolExecutor(max_workers=max_audio_workers) as audio_executor:
+                future_to_scene = {}
+                for scene in storyboard["scenes"]:
+                    future = audio_executor.submit(generate_scene_audio, scene, job_dir, voice_choice)
+                    future_to_scene[future] = scene
+                    if max_audio_workers == 1:
+                        time.sleep(0.3)
                 done_audios = 0
                 for future in as_completed(future_to_scene):
                     sc = future_to_scene[future]
