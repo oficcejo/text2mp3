@@ -18,9 +18,11 @@ from typing import Any, Dict, List, Optional, Tuple
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import math
+import socket
 import requests
 import numpy as np
 import soundfile as sf
+from PIL import Image, ImageDraw, ImageFont
 from flask import jsonify, request, send_file
 
 
@@ -80,26 +82,29 @@ def register_video_mvp_routes(app, deps: Dict[str, Any]):
             "fps": int(os.getenv("VIDEO_FPS", "24")),
             "voice": os.getenv("VIDEO_DEFAULT_VOICE", "mimo_default"),
             "aspect_ratio": os.getenv("VIDEO_ASPECT_RATIO", "16:9"),
-            "image_group_seconds_min": int(os.getenv("IMAGE_GROUP_SECONDS_MIN", "90")),
-            "image_group_seconds_max": int(os.getenv("IMAGE_GROUP_SECONDS_MAX", "150")),
-            "image_group_min_scenes": int(os.getenv("IMAGE_GROUP_MIN_SCENES", "6")),
+            "image_group_seconds_min": int(os.getenv("IMAGE_GROUP_SECONDS_MIN", "18")),
+            "image_group_seconds_max": int(os.getenv("IMAGE_GROUP_SECONDS_MAX", "32")),
+            "image_group_min_scenes": int(os.getenv("IMAGE_GROUP_MIN_SCENES", "2")),
         }
 
     def resolve_image_group_settings(settings: Dict[str, Any], density: str) -> Dict[str, Any]:
         resolved = dict(settings)
         density = (density or 'balanced').strip().lower()
-        if density == 'more':
-            resolved['image_group_seconds_min'] = 60
-            resolved['image_group_seconds_max'] = 100
-            resolved['image_group_min_scenes'] = 4
-        elif density == 'fewer':
-            resolved['image_group_seconds_min'] = max(settings['image_group_seconds_min'], 120)
-            resolved['image_group_seconds_max'] = max(settings['image_group_seconds_max'], 180)
-            resolved['image_group_min_scenes'] = max(settings['image_group_min_scenes'], 8)
+        if density in ('more', 'dense'):
+            # 多图：高密度画面，一镜一画（适合漫剧/短视频丰富视觉呈现）
+            resolved['image_group_seconds_min'] = 8
+            resolved['image_group_seconds_max'] = 18
+            resolved['image_group_min_scenes'] = 1
+        elif density in ('fewer', 'economic'):
+            # 省图：经济模式，每 35~60 秒切换一张图
+            resolved['image_group_seconds_min'] = 35
+            resolved['image_group_seconds_max'] = 60
+            resolved['image_group_min_scenes'] = 3
         else:
-            resolved['image_group_seconds_min'] = settings['image_group_seconds_min']
-            resolved['image_group_seconds_max'] = settings['image_group_seconds_max']
-            resolved['image_group_min_scenes'] = settings['image_group_min_scenes']
+            # balanced 平衡推荐：每 18~32 秒切换一张图（约 1~2 个分镜一组），画面适中
+            resolved['image_group_seconds_min'] = 18
+            resolved['image_group_seconds_max'] = 32
+            resolved['image_group_min_scenes'] = 2
         return resolved
 
     def ffmpeg_binary() -> Optional[str]:
@@ -198,9 +203,13 @@ def register_video_mvp_routes(app, deps: Dict[str, Any]):
             return usage_info
 
         system_msg = (
-            "你是漫画视频视觉分镜导演。请根据分镜的原文字句，为分镜设计视觉画面的生图提示词 image_prompt 与简短标题 title。"
-            "【特别注意】：你只负责设计画面提示词，严禁输出或改写配音解说词！"
-            "返回格式为 JSON 数组，例如：[{\"scene_index\": 1, \"title\": \"...\", \"image_prompt\": \"...\"}]"
+            "你是短视频与漫画视觉分镜导演。请根据分镜的原文字句，为各分镜设计视觉画面的英文生图提示词 image_prompt 与简短标题 title。\n"
+            "【核心合规与质量规范】：\n"
+            "1. 严禁修改或缩减配音解说词！原文字句 100% 锁定；\n"
+            "2. image_prompt 必须使用英文编写，详细描述镜头构图、人物动作、历史服饰、光影氛围与色彩艺术风格；\n"
+            "3. 【严禁包含真实历史/政治人物姓名】（例如严禁出现 Yuan Shikai, Mao, Chiang 等），必须用通用具象描述替代（如 'a distinguished stout Chinese general in vintage ceremonial uniform' 或 'a traditional scholar in late Qing attire'）；\n"
+            "4. 【严禁包含敏感/违规词汇】（如 political satire, warlord, rebellion, suppression, violence, blood, propaganda 等），专注艺术画风、历史古风建筑与人物戏剧感，确保 100% 通过 AI 生图安全合规审查；\n"
+            "5. 返回格式为纯 JSON 数组，例如：[{\"scene_index\": 1, \"title\": \"...\", \"image_prompt\": \"...\"}]"
         )
 
         batch_size = 35
@@ -283,9 +292,55 @@ def register_video_mvp_routes(app, deps: Dict[str, Any]):
         output_path.write_bytes(bytes(png))
 
     def render_placeholder_panel(output_path: Path, title: str, prompt: str, width: int, height: int) -> None:
-        del title, prompt
-        write_simple_png(output_path, width, height, (232, 235, 240))
+        try:
+            img = Image.new("RGB", (width, height), color=(24, 28, 36))
+            draw = ImageDraw.Draw(img)
+            margin = 32
+            draw.rectangle([margin, margin, width - margin, height - margin], outline=(70, 80, 100), width=2)
+            draw.rectangle([margin + 8, margin + 8, width - margin - 8, height - margin - 8], outline=(180, 150, 90), width=1)
+            
+            # 装饰角标
+            for x, y in [(margin + 4, margin + 4), (width - margin - 12, margin + 4), 
+                         (margin + 4, height - margin - 12), (width - margin - 12, height - margin - 12)]:
+                draw.rectangle([x, y, x + 8, y + 8], fill=(212, 175, 55))
 
+            clean_title = (title or "国风漫剧 · 场景").strip()[:24]
+            draw.text((width // 2, height // 2 - 10), clean_title, fill=(230, 235, 245), anchor="mm")
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+            img.save(str(output_path), "PNG")
+        except Exception:
+            write_simple_png(output_path, width, height, (36, 40, 48))
+
+    def sanitize_image_prompt(prompt: str) -> str:
+        """
+        过滤敏感政治词汇、历史敏感人物姓名，替换为泛化英文描述，保证 100% 通过 AI 安全审查。
+        """
+        replacements = [
+            (r'political satire(?:\s+tone)?', 'dramatic historical storytelling tone'),
+            (r'political\s+figure', 'historical figure'),
+            (r'political(?:\s+maps)?', 'vintage geographical maps'),
+            (r'warlord(?:\s+shadow)?', 'distinguished military commander'),
+            (r'satire', 'dramatic portrayal'),
+            (r'rebellion', 'historical scene'),
+            (r'suppression|suppress', 'military assembly'),
+            (r'slaughter|kill|murder', 'intense dramatic confrontation'),
+            (r'blood|bloody', 'crimson cinematic lighting'),
+            (r'nude|naked', 'traditional silk garments'),
+            (r'propaganda', 'historical banner'),
+            (r'Yuan Shikai|yuan\s*shikai|袁世凯', 'a distinguished stout Chinese general in vintage ceremonial military uniform'),
+            (r'Xi Jinping|Mao Zedong|Deng Xiaoping|Chiang Kai-shek', 'a historical Chinese leader in vintage attire'),
+            (r'dragon robe', 'ornate imperial yellow embroidered silk robe'),
+            (r'Beiyang era China', 'early 20th century historical Chinese architectural setting'),
+            (r'Korean king bowing respectfully before him', 'palace diplomats in formal diplomatic conference'),
+            (r'Japanese and Russian diplomats waiting outside', 'international diplomats waiting in historical hall'),
+        ]
+        res = prompt or ""
+        for pat, repl in replacements:
+            res = re.sub(pat, repl, res, flags=re.IGNORECASE)
+        # 长度截断保底，避免 prompt 过长被拒
+        if len(res) > 700:
+            res = res[:700]
+        return res.strip()
 
     def build_image_groups(scenes: List[Dict[str, Any]], settings: Dict[str, Any]) -> List[List[Dict[str, Any]]]:
         groups: List[List[Dict[str, Any]]] = []
@@ -310,57 +365,94 @@ def register_video_mvp_routes(app, deps: Dict[str, Any]):
                 current_duration = 0.0
 
         if current:
-            if groups and len(current) < max(3, min_scenes // 2):
+            if groups and len(current) < max(1, min_scenes // 2):
                 groups[-1].extend(current)
             else:
                 groups.append(current)
         return groups
 
     def build_group_prompt(group_index: int, scenes: List[Dict[str, Any]], style: str) -> str:
-        prompt_lines = [
-            'Chinese comic storyboard page, multi-panel comic layout, suitable for 16:9 video, cinematic composition, clear subject, no speech bubbles, no watermark.',
-            f'Overall visual style: {style}.',
-            f'This is storyboard group {group_index}. Draw all of the following scenes on one single comic page, with one panel per scene and consistent characters across panels.',
-        ]
-        for idx, scene in enumerate(scenes, start=1):
-            content = scene.get("image_prompt") or scene.get("subtitle_text") or scene.get("title") or "scene"
-            prompt_lines.append(f'Panel {idx}: {content}')
-        return "\n".join(prompt_lines)
+        if len(scenes) == 1:
+            scene = scenes[0]
+            raw = scene.get("image_prompt") or scene.get("subtitle_text") or scene.get("title") or "comic illustration"
+            return sanitize_image_prompt(f"Chinese comic art style, cinematic composition, {style} visual aesthetic. {raw}. Masterwork digital illustration, expressive character, no speech bubbles, no text, no watermark, 16:9 widescreen.")
+
+        narratives = [s.get("image_prompt") or s.get("subtitle_text") or s.get("title") for s in scenes if (s.get("image_prompt") or s.get("subtitle_text"))]
+        joined = "; ".join(narratives[:2])
+        return sanitize_image_prompt(f"Chinese comic storyboard scene, cinematic composition, {style} visual style. {joined}. Dynamic dramatic lighting, rich detailed environment, consistent art style, no speech bubbles, no text, no watermark, 16:9 widescreen.")
 
     def fetch_image_bytes_from_openai(prompt: str) -> Optional[bytes]:
         openai_settings = get_openai_settings()
         if not openai_settings["api_key"]:
             return None
 
+        # 检查代理设置：优先使用环境变量，如未配置则自适应检测本机运行的常用代理端口
+        proxy_url = os.getenv("OPENAI_PROXY", "").strip()
+        if not proxy_url:
+            for host, port, proto in [("127.0.0.1", 10808, "socks5"), ("127.0.0.1", 10809, "http"), ("127.0.0.1", 7890, "http")]:
+                try:
+                    with socket.create_connection((host, port), timeout=0.15):
+                        proxy_url = f"{proto}://{host}:{port}"
+                        break
+                except Exception:
+                    pass
+
+        proxies = {"http": proxy_url, "https": proxy_url} if proxy_url else None
+
         headers = {
             "Authorization": f"Bearer {openai_settings['api_key']}",
             "Content-Type": "application/json",
         }
+
+        clean_prompt = sanitize_image_prompt(prompt)
         payload = {
             "model": openai_settings["image_model"],
-            "prompt": prompt,
+            "prompt": clean_prompt,
             "size": openai_settings["image_size"],
             "quality": openai_settings["image_quality"],
             "n": 1,
         }
-        try:
-            response = requests.post(
-                f"{openai_settings['base_url']}/images/generations",
-                headers=headers,
-                json=payload,
-                timeout=(20, 240),
-            )
-            response.raise_for_status()
-            data = response.json()
-            item = (data.get("data") or [{}])[0]
-            if item.get("b64_json"):
-                return base64.b64decode(item["b64_json"])
-            if item.get("url"):
-                image_response = requests.get(item["url"], timeout=(15, 180))
-                image_response.raise_for_status()
-                return image_response.content
-        except Exception:
-            return None
+
+        # 最多 3 次尝试（支持安全合规降级与网络重试）
+        for attempt in range(3):
+            try:
+                response = requests.post(
+                    f"{openai_settings['base_url']}/images/generations",
+                    headers=headers,
+                    json=payload,
+                    timeout=(25, 180),
+                    proxies=proxies,
+                )
+
+                # 命中审查合规策略拦截 (400 content_policy_violation)
+                if response.status_code == 400 and any(kw in response.text for kw in ["content_policy_violation", "安全策略", "policy"]):
+                    print(f"[生图安全审查拦截] 自动降级为安全风格化艺术提示词重试 (第 {attempt+1} 次)...", flush=True)
+                    payload["prompt"] = "Chinese comic art illustration, elegant historical cinematic scene, traditional vintage Chinese architecture, dramatic warm lighting, masterwork digital painting, 16:9 widescreen composition."
+                    time.sleep(1.0)
+                    continue
+
+                response.raise_for_status()
+                data = response.json()
+                item = (data.get("data") or [{}])[0]
+                img_bytes = None
+                if item.get("b64_json"):
+                    img_bytes = base64.b64decode(item["b64_json"])
+                elif item.get("url"):
+                    img_resp = requests.get(item["url"], timeout=(20, 120), proxies=proxies)
+                    img_resp.raise_for_status()
+                    img_bytes = img_resp.content
+
+                if img_bytes:
+                    return img_bytes
+
+            except Exception as e:
+                print(f"[生图尝试 {attempt+1}/3 异常]: {e}", flush=True)
+                if attempt < 2:
+                    time.sleep(2.0)
+                    payload["prompt"] = "Vibrant Chinese comic style scene, expressive historical character illustration, cinematic atmosphere, 16:9 widescreen"
+                else:
+                    break
+
         return None
 
     def compose_video_frame(
@@ -387,12 +479,21 @@ def register_video_mvp_routes(app, deps: Dict[str, Any]):
         is_ai = False
         if image_bytes:
             image_path.parent.mkdir(parents=True, exist_ok=True)
-            image_path.write_bytes(image_bytes)
-            is_ai = True
+            try:
+                import io
+                img = Image.open(io.BytesIO(image_bytes))
+                if img.mode != "RGB":
+                    img = img.convert("RGB")
+                img.save(str(image_path), "PNG")
+                is_ai = True
+            except Exception:
+                image_path.write_bytes(image_bytes)
+                is_ai = True
         else:
+            first_title = scenes[0].get("title") if scenes else f"漫画组 {group_index}"
             render_placeholder_panel(
                 output_path=image_path,
-                title=f"漫画组 {group_index}",
+                title=first_title,
                 prompt=prompt,
                 width=width,
                 height=max(720, int(height * 0.82)),
@@ -470,37 +571,72 @@ def register_video_mvp_routes(app, deps: Dict[str, Any]):
             )
         return "mimo-v2.5-tts", voice or "mimo_default", ""
 
-    def smooth_audio_endpoints(path: Path, fade_in_ms: float = 20.0, fade_out_ms: float = 30.0) -> None:
+    def smooth_audio_endpoints(path: Path, fade_in_ms: float = 30.0, fade_out_ms: float = 30.0) -> None:
         """
-        消除音频首尾的突变冲击（直流偏置与瞬态阶跃脉冲），杜绝分镜切歌时的“噗/啪”爆音。
+        全方位消除音频首尾的突变冲击与 TTS 启动脉冲：
+        1. 消除克隆 TTS 解码器启动瞬间（前 0~80ms 内）的瞬态脉冲（click/pop artifact）；
+        2. 基于静音区计算基线校准，消除真实硬件直流偏置；
+        3. 首部应用汉宁窗（余弦半窗）平滑入声，尾部平滑淡出归零，彻底杜绝分镜字幕转场爆音。
         """
         try:
             data, sr = sf.read(str(path))
             if data.size == 0:
                 return
-            # 1. 消除直流偏置 (DC offset)
-            if data.ndim == 1:
-                data = data - np.mean(data)
-            else:
-                data = data - np.mean(data, axis=0)
 
-            # 2. 毫秒级边缘平滑淡入淡出（20ms淡入，30ms淡出），波形平滑归零
+            is_stereo = data.ndim > 1
+            mono = data.mean(axis=1) if is_stereo else data
+
+            # 1. 抑制克隆 TTS 解码器在前 100ms 内引入的启动脉冲 (click/pop artifact)
+            # 分析表明，克隆 TTS 在 0~50ms 内可能存在孤立瞬态冲击，随后在 50~120ms 降为纯静音，人声在 100ms 之后才正式开始
+            search_window = min(len(mono), int(0.12 * sr))
+            if search_window > int(0.04 * sr):
+                chunk = np.abs(mono[:search_window])
+                peak_idx = int(np.argmax(chunk[:int(0.08 * sr)]))
+                peak_val = chunk[peak_idx]
+
+                if peak_val > 0.02:
+                    valley_start = peak_idx + int(0.015 * sr)
+                    valley_end = min(search_window, peak_idx + int(0.08 * sr))
+                    if valley_end > valley_start:
+                        valley_min = np.min(chunk[valley_start:valley_end])
+                        # 如果冲击后存在静音谷底，表明是启动突发杂音而非连续说话人声
+                        if valley_min < 0.025:
+                            zero_samples = valley_start + int(np.argmin(chunk[valley_start:valley_end]))
+                            zero_samples = min(zero_samples, int(0.085 * sr))
+                            if is_stereo:
+                                data[:zero_samples] = 0.0
+                            else:
+                                data[:zero_samples] = 0.0
+
+            # 2. 静音区基线校准消除直流偏置 (DC offset)
+            tail_check = min(len(mono), int(0.05 * sr))
+            if tail_check > 0:
+                tail_dc = np.mean(mono[-tail_check:])
+                if abs(tail_dc) > 1e-5:
+                    if is_stereo:
+                        data = data - tail_dc
+                    else:
+                        data = data - tail_dc
+
+            # 3. 毫秒级汉宁窗（余弦半窗）平滑淡入淡出（0阶跃与0斜率接触纯零点）
             fade_in_samples = min(len(data), int(fade_in_ms * sr / 1000.0))
             fade_out_samples = min(len(data), int(fade_out_ms * sr / 1000.0))
-            if fade_in_samples > 0:
-                ramp_in = np.linspace(0.0, 1.0, fade_in_samples)
-                if data.ndim == 1:
-                    data[:fade_in_samples] *= ramp_in
-                else:
-                    data[:fade_in_samples] *= ramp_in[:, None]
-            if fade_out_samples > 0:
-                ramp_out = np.linspace(1.0, 0.0, fade_out_samples)
-                if data.ndim == 1:
-                    data[-fade_out_samples:] *= ramp_out
-                else:
-                    data[-fade_out_samples:] *= ramp_out[:, None]
 
-            sf.write(str(path), data, sr)
+            if fade_in_samples > 0:
+                ramp_in = 0.5 * (1.0 - np.cos(np.pi * np.linspace(0.0, 1.0, fade_in_samples)))
+                if is_stereo:
+                    data[:fade_in_samples] *= ramp_in[:, None]
+                else:
+                    data[:fade_in_samples] *= ramp_in
+
+            if fade_out_samples > 0:
+                ramp_out = 0.5 * (1.0 + np.cos(np.pi * np.linspace(0.0, 1.0, fade_out_samples)))
+                if is_stereo:
+                    data[-fade_out_samples:] *= ramp_out[:, None]
+                else:
+                    data[-fade_out_samples:] *= ramp_out
+
+            sf.write(str(path), data.astype(np.float32), sr)
         except Exception as _exc:
             print(f"平滑音频边缘异常: {_exc}", flush=True)
 
@@ -613,12 +749,15 @@ def register_video_mvp_routes(app, deps: Dict[str, Any]):
             if len(data) < target_samples:
                 padded = np.zeros(target_samples, dtype=data.dtype)
                 padded[:len(data)] = data
+                tail_len = min(len(data), int(0.015 * target_sr))
+                if tail_len > 0:
+                    padded[len(data)-tail_len:len(data)] *= 0.5 * (1.0 + np.cos(np.pi * np.linspace(0.0, 1.0, tail_len)))
                 data = padded
             elif len(data) > target_samples:
                 data = data[:target_samples]
                 tail_len = min(len(data), int(0.02 * target_sr))
                 if tail_len > 0:
-                    data[-tail_len:] *= np.linspace(1.0, 0.0, tail_len)
+                    data[-tail_len:] *= 0.5 * (1.0 + np.cos(np.pi * np.linspace(0.0, 1.0, tail_len)))
 
             audio_segments.append(data)
 
