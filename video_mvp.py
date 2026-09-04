@@ -33,6 +33,10 @@ def register_video_mvp_routes(app, deps: Dict[str, Any]):
     output_dir = Path(deps["output_dir"])
     get_cloned_voice_sample = deps["get_cloned_voice_sample"]
     call_mimo_tts = deps["call_mimo_tts"]
+    load_cloned_voices = deps.get("load_cloned_voices", lambda: [])
+    load_designed_voices = deps.get("load_designed_voices", lambda: [])
+    get_designed_voice = deps.get("get_designed_voice")
+    builtin_voices = deps.get("builtin_voices", {})
 
     def now_iso() -> str:
         return datetime.now().isoformat()
@@ -612,6 +616,7 @@ def register_video_mvp_routes(app, deps: Dict[str, Any]):
             return 0.0
 
     def build_voice_payload(voice: str) -> Tuple[str, str, str]:
+        voice = (voice or "").strip()
         if voice.startswith("cloned:"):
             clone_id = voice.split(":", 1)[1]
             sample_bytes = get_cloned_voice_sample(clone_id)
@@ -620,6 +625,18 @@ def register_video_mvp_routes(app, deps: Dict[str, Any]):
                 "",
                 base64.b64encode(sample_bytes).decode("utf-8"),
             )
+        elif voice.startswith("designed:"):
+            design_id = voice.split(":", 1)[1]
+            try:
+                d_info = get_designed_voice(design_id) if get_designed_voice else {}
+                return (
+                    "mimo-v2.5-tts-voicedesign",
+                    d_info.get("prompt", "") if isinstance(d_info, dict) else "",
+                    "",
+                )
+            except Exception as e:
+                print(f"获取设计音色异常: {e}", flush=True)
+                return ("mimo-v2.5-tts-voicedesign", "自然成熟沉稳的人声", "")
         return "mimo-v2.5-tts", voice or "mimo_default", ""
 
     def smooth_audio_endpoints(path: Path, fade_in_ms: float = 30.0, fade_out_ms: float = 30.0) -> None:
@@ -695,6 +712,8 @@ def register_video_mvp_routes(app, deps: Dict[str, Any]):
         audio_path = job_dir / "audio" / f"scene_{scene['scene_index']:03d}.wav"
         warning = None
         model, voice_name, voice_sample_b64 = build_voice_payload(voice)
+        style_instruction = voice_name if model == "mimo-v2.5-tts-voicedesign" else ""
+        mimo_voice = "" if model == "mimo-v2.5-tts-voicedesign" else voice_name
 
         max_retries = 4
         for attempt in range(max_retries):
@@ -702,8 +721,8 @@ def register_video_mvp_routes(app, deps: Dict[str, Any]):
                 audio_bytes, _ = call_mimo_tts(
                     model=model,
                     text=scene["narration_text"],
-                    voice=voice_name,
-                    style_instruction="",
+                    voice=mimo_voice,
+                    style_instruction=style_instruction,
                     audio_format="wav",
                     stream=False,
                     voice_audio_base64=voice_sample_b64,
@@ -1033,8 +1052,25 @@ def register_video_mvp_routes(app, deps: Dict[str, Any]):
         storyboard = json_read(job_dir / "storyboard.json", {})
         scenes = [scene_urls(job_id, scene) for scene in storyboard.get("scenes", [])]
         outputs = manifest.get("outputs", {})
+        source_text = manifest.get("source_text", "")
+        project_name = manifest.get("project_name") or storyboard.get("title") or (source_text[:25].strip() if source_text else job_id)
+        thumbnail_url = None
+        if scenes:
+            thumbnail_url = scenes[0].get("frame_url") or scenes[0].get("image_url")
+        elif (job_dir / "frames" / "scene_001.png").exists():
+            thumbnail_url = f"/video-jobs/{job_id}/frames/scene_001.png"
+        elif (job_dir / "images" / "group_001.png").exists():
+            thumbnail_url = f"/video-jobs/{job_id}/images/group_001.png"
+
+        metrics = get_job_metrics(manifest, storyboard, job_dir)
+
         return {
             "job_id": job_id,
+            "project_name": project_name,
+            "source_text": source_text,
+            "thumbnail_url": thumbnail_url,
+            "scenes_count": len(scenes),
+            "duration": metrics.get("total_duration_sec", 0.0),
             "status": manifest.get("status"),
             "progress": manifest.get("progress", 0),
             "detail_message": manifest.get("detail_message", ""),
@@ -1043,8 +1079,8 @@ def register_video_mvp_routes(app, deps: Dict[str, Any]):
             "created_at": manifest.get("created_at"),
             "updated_at": manifest.get("updated_at"),
             "config": manifest.get("config", {}),
-            "metrics": get_job_metrics(manifest, storyboard, job_dir),
-            "title": storyboard.get("title"),
+            "metrics": metrics,
+            "title": storyboard.get("title") or project_name,
             "style": storyboard.get("style"),
             "scenes": scenes,
             "video_url": f"/video-jobs/{job_id}/{outputs['video_file']}" if outputs.get("video_file") else None,
@@ -1307,7 +1343,7 @@ def register_video_mvp_routes(app, deps: Dict[str, Any]):
     @app.route("/api/video/jobs", methods=["GET"])
     def api_video_jobs():
         items = []
-        for job_dir in sorted(jobs_dir.glob("job_*"), key=lambda p: p.stat().st_mtime, reverse=True)[:20]:
+        for job_dir in sorted(jobs_dir.glob("job_*"), key=lambda p: p.stat().st_mtime, reverse=True)[:50]:
             items.append(job_response(job_dir.name))
         return jsonify({"jobs": items})
 
@@ -1318,6 +1354,7 @@ def register_video_mvp_routes(app, deps: Dict[str, Any]):
         if not text:
             return jsonify({"error": "请输入文章内容"}), 400
 
+        project_name = (data.get("project_name") or "").strip()
         settings = get_video_settings()
         job_id = f"job_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:6]}"
         job_dir = jobs_dir / job_id
@@ -1326,6 +1363,7 @@ def register_video_mvp_routes(app, deps: Dict[str, Any]):
 
         manifest = {
             "job_id": job_id,
+            "project_name": project_name or text[:25].strip() or "未命名视频项目",
             "status": "pending",
             "progress": 0,
             "source_text": text,
@@ -1363,12 +1401,222 @@ def register_video_mvp_routes(app, deps: Dict[str, Any]):
         thread.start()
         return jsonify({"success": True, "job": job_response(job_id)})
 
+    def execute_change_voice(job_id: str, new_voice: str):
+        job_dir = jobs_dir / job_id
+        manifest_path = job_dir / "manifest.json"
+        storyboard_path = job_dir / "storyboard.json"
+        if not manifest_path.exists() or not storyboard_path.exists():
+            return
+
+        manifest = json_read(manifest_path, {})
+        storyboard = json_read(storyboard_path, {})
+        settings = get_video_settings()
+        if "aspect_ratio" in manifest.get("config", {}):
+            settings["aspect_ratio"] = manifest["config"]["aspect_ratio"]
+        settings["voice"] = new_voice
+
+        manifest["status"] = "generating_assets"
+        manifest["progress"] = 15
+        manifest["detail_message"] = f"正在使用新音色【{new_voice}】重新生成分镜配音..."
+        manifest["config"]["voice"] = new_voice
+        manifest["updated_at"] = now_iso()
+        json_write(manifest_path, manifest)
+
+        scenes = storyboard.get("scenes", [])
+        total_chars = 0
+        total_duration = 0.0
+        warnings = manifest.get("warnings", [])
+
+        try:
+            # 重新生成所有分镜音频
+            for idx, s in enumerate(scenes):
+                total_chars += len(re.sub(r"\s+", "", s.get("narration_text", "")))
+                a_file, dur, warn = generate_scene_audio(s, job_dir, new_voice)
+                s["audio_file"] = a_file
+                s["actual_duration_sec"] = dur
+                total_duration += dur
+                if warn:
+                    warnings.append(warn)
+                pct = 15 + int(50 * (idx + 1) / max(1, len(scenes)))
+                manifest["progress"] = pct
+                manifest["detail_message"] = f"正在为分镜 {idx + 1}/{len(scenes)} 重新配音..."
+                json_write(manifest_path, manifest)
+
+            storyboard["scenes"] = scenes
+            storyboard["estimated_duration_sec"] = round(total_duration, 1)
+            json_write(storyboard_path, storyboard)
+
+            # 重建字幕与时间轴
+            manifest["status"] = "building_subtitles"
+            manifest["progress"] = 70
+            manifest["detail_message"] = "正在根据新语速对齐中文字幕..."
+            json_write(manifest_path, manifest)
+
+            srt_path = job_dir / "subtitles" / "subtitles.srt"
+            build_subtitles(storyboard, srt_path)
+
+            # 重新极速渲染视频（保留现有高清画格，0 生图消耗）
+            manifest["status"] = "rendering_video"
+            manifest["progress"] = 80
+            manifest["detail_message"] = "正在保留原图画格，重新极速合成视频与镜头运镜..."
+            json_write(manifest_path, manifest)
+
+            raw_video, final_video = render_video(storyboard, job_dir, settings)
+
+            manifest["status"] = "completed"
+            manifest["progress"] = 100
+            manifest["detail_message"] = f"配音更换完成！已更新为【{new_voice}】并重新烧录成片"
+            manifest["outputs"]["subtitle_file"] = str(srt_path.relative_to(job_dir)).replace("\\", "/")
+            if final_video:
+                manifest["outputs"]["video_file"] = str(final_video.relative_to(job_dir)).replace("\\", "/")
+            elif raw_video:
+                manifest["outputs"]["video_file"] = str(raw_video.relative_to(job_dir)).replace("\\", "/")
+
+            if "metrics" in manifest:
+                manifest["metrics"]["total_duration_sec"] = round(total_duration, 1)
+            manifest["warnings"] = warnings[-20:]
+            manifest["updated_at"] = now_iso()
+            json_write(manifest_path, manifest)
+        except Exception as exc:
+            traceback.print_exc()
+            manifest["status"] = "failed"
+            manifest["error"] = f"更换配音失败: {exc}"
+            manifest["updated_at"] = now_iso()
+            json_write(manifest_path, manifest)
+
+    def execute_rerender(job_id: str):
+        job_dir = jobs_dir / job_id
+        manifest_path = job_dir / "manifest.json"
+        storyboard_path = job_dir / "storyboard.json"
+        if not manifest_path.exists() or not storyboard_path.exists():
+            return
+
+        manifest = json_read(manifest_path, {})
+        storyboard = json_read(storyboard_path, {})
+        settings = get_video_settings()
+        voice = manifest.get("config", {}).get("voice") or settings["voice"]
+        if "aspect_ratio" in manifest.get("config", {}):
+            settings["aspect_ratio"] = manifest["config"]["aspect_ratio"]
+
+        manifest["status"] = "generating_assets"
+        manifest["progress"] = 20
+        manifest["detail_message"] = "正在检查并更新分镜音频..."
+        manifest["updated_at"] = now_iso()
+        json_write(manifest_path, manifest)
+
+        scenes = storyboard.get("scenes", [])
+        total_duration = 0.0
+        warnings = manifest.get("warnings", [])
+
+        try:
+            for idx, s in enumerate(scenes):
+                audio_path = job_dir / f"audio/scene_{s['scene_index']:03d}.wav"
+                if not audio_path.exists() or not s.get("audio_file"):
+                    a_file, dur, warn = generate_scene_audio(s, job_dir, voice)
+                    s["audio_file"] = a_file
+                    s["actual_duration_sec"] = dur
+                    if warn:
+                        warnings.append(warn)
+                else:
+                    dur = audio_duration(audio_path)
+                    s["actual_duration_sec"] = dur
+                total_duration += float(s.get("actual_duration_sec") or 3.0)
+
+            storyboard["scenes"] = scenes
+            storyboard["estimated_duration_sec"] = round(total_duration, 1)
+            json_write(storyboard_path, storyboard)
+
+            # 重新生成字幕
+            manifest["status"] = "building_subtitles"
+            manifest["progress"] = 65
+            manifest["detail_message"] = "正在根据修改后的分镜对齐字幕..."
+            json_write(manifest_path, manifest)
+
+            srt_path = job_dir / "subtitles" / "subtitles.srt"
+            build_subtitles(storyboard, srt_path)
+
+            # 重新渲染视频
+            manifest["status"] = "rendering_video"
+            manifest["progress"] = 80
+            manifest["detail_message"] = "正在重新合成完整视频..."
+            json_write(manifest_path, manifest)
+
+            raw_video, final_video = render_video(storyboard, job_dir, settings)
+
+            manifest["status"] = "completed"
+            manifest["progress"] = 100
+            manifest["detail_message"] = "视频重新合成完成！"
+            manifest["outputs"]["subtitle_file"] = str(srt_path.relative_to(job_dir)).replace("\\", "/")
+            if final_video:
+                manifest["outputs"]["video_file"] = str(final_video.relative_to(job_dir)).replace("\\", "/")
+            elif raw_video:
+                manifest["outputs"]["video_file"] = str(raw_video.relative_to(job_dir)).replace("\\", "/")
+
+            if "metrics" in manifest:
+                manifest["metrics"]["total_duration_sec"] = round(total_duration, 1)
+            manifest["warnings"] = warnings[-20:]
+            manifest["updated_at"] = now_iso()
+            json_write(manifest_path, manifest)
+        except Exception as exc:
+            traceback.print_exc()
+            manifest["status"] = "failed"
+            manifest["error"] = f"重新合成失败: {exc}"
+            manifest["updated_at"] = now_iso()
+            json_write(manifest_path, manifest)
+
     @app.route("/api/video/jobs/<job_id>", methods=["GET"])
     def api_video_job(job_id: str):
         job_dir = jobs_dir / job_id
         if not job_dir.exists():
             return jsonify({"error": "job not found"}), 404
         return jsonify({"job": job_response(job_id)})
+
+    @app.route("/api/video/jobs/<job_id>", methods=["DELETE"])
+    def api_delete_video_job(job_id: str):
+        job_dir = jobs_dir / job_id
+        if job_dir.exists():
+            shutil.rmtree(str(job_dir), ignore_errors=True)
+        return jsonify({"success": True})
+
+    @app.route("/api/video/jobs/<job_id>/save", methods=["POST"])
+    def api_save_video_job(job_id: str):
+        job_dir = jobs_dir / job_id
+        manifest_path = job_dir / "manifest.json"
+        if not manifest_path.exists():
+            return jsonify({"error": "job not found"}), 404
+        data = request.get_json(force=True)
+        manifest = json_read(manifest_path, {})
+        if data.get("project_name") is not None:
+            manifest["project_name"] = str(data["project_name"]).strip()
+        if data.get("tags") is not None:
+            manifest["tags"] = data["tags"]
+        manifest["updated_at"] = now_iso()
+        json_write(manifest_path, manifest)
+        return jsonify({"success": True, "job": job_response(job_id)})
+
+    @app.route("/api/video/jobs/<job_id>/change-voice", methods=["POST"])
+    def api_change_video_voice(job_id: str):
+        job_dir = jobs_dir / job_id
+        if not job_dir.exists():
+            return jsonify({"error": "job not found"}), 404
+        data = request.get_json(force=True)
+        new_voice = (data.get("voice") or "").strip()
+        if not new_voice:
+            return jsonify({"error": "请选择要更换的配音音色"}), 400
+
+        thread = threading.Thread(target=execute_change_voice, args=(job_id, new_voice), daemon=True)
+        thread.start()
+        return jsonify({"success": True, "message": f"已开始为任务【{job_id}】更换配音为【{new_voice}】", "job": job_response(job_id)})
+
+    @app.route("/api/video/jobs/<job_id>/rerender", methods=["POST"])
+    def api_rerender_video_job(job_id: str):
+        job_dir = jobs_dir / job_id
+        if not job_dir.exists():
+            return jsonify({"error": "job not found"}), 404
+
+        thread = threading.Thread(target=execute_rerender, args=(job_id,), daemon=True)
+        thread.start()
+        return jsonify({"success": True, "message": f"已开始重新渲染任务【{job_id}】", "job": job_response(job_id)})
 
     @app.route("/api/video/jobs/<job_id>/storyboard", methods=["GET"])
     def api_video_storyboard(job_id: str):
@@ -1377,6 +1625,82 @@ def register_video_mvp_routes(app, deps: Dict[str, Any]):
         if not storyboard_path.exists():
             return jsonify({"error": "storyboard not ready"}), 404
         return jsonify(json_read(storyboard_path, {}))
+
+    @app.route("/api/video/jobs/<job_id>/storyboard", methods=["POST"])
+    def api_update_video_storyboard(job_id: str):
+        job_dir = jobs_dir / job_id
+        storyboard_path = job_dir / "storyboard.json"
+        if not storyboard_path.exists():
+            return jsonify({"error": "storyboard not found"}), 404
+        data = request.get_json(force=True)
+        new_scenes = data.get("scenes")
+        if not isinstance(new_scenes, list):
+            return jsonify({"error": "scenes 格式不正确"}), 400
+
+        storyboard = json_read(storyboard_path, {})
+        existing_scenes = storyboard.get("scenes", [])
+        lookup = {s["scene_index"]: s for s in existing_scenes}
+
+        for ns in new_scenes:
+            s_idx = ns.get("scene_index")
+            if s_idx in lookup:
+                if ns.get("title") is not None:
+                    lookup[s_idx]["title"] = str(ns["title"]).strip()
+                if ns.get("narration_text") is not None:
+                    lookup[s_idx]["narration_text"] = str(ns["narration_text"]).strip()
+                if ns.get("subtitle_text") is not None:
+                    lookup[s_idx]["subtitle_text"] = str(ns["subtitle_text"]).strip()
+                if ns.get("image_prompt") is not None:
+                    lookup[s_idx]["image_prompt"] = str(ns["image_prompt"]).strip()
+
+        storyboard["scenes"] = existing_scenes
+        json_write(storyboard_path, storyboard)
+
+        # 同步更新字幕
+        srt_path = job_dir / "subtitles" / "subtitles.srt"
+        build_subtitles(storyboard, srt_path)
+
+        manifest_path = job_dir / "manifest.json"
+        manifest = json_read(manifest_path, {})
+        manifest["updated_at"] = now_iso()
+        manifest["detail_message"] = "分镜内容已更新保存！可点击「重新渲染成片」导出最新视频。"
+        json_write(manifest_path, manifest)
+
+        return jsonify({"success": True, "job": job_response(job_id)})
+
+    @app.route("/api/video/jobs/<job_id>/regenerate-scene-audio", methods=["POST"])
+    def api_regenerate_scene_audio(job_id: str):
+        job_dir = jobs_dir / job_id
+        storyboard_path = job_dir / "storyboard.json"
+        manifest_path = job_dir / "manifest.json"
+        if not storyboard_path.exists():
+            return jsonify({"error": "storyboard not found"}), 404
+
+        data = request.get_json(force=True)
+        s_idx = int(data.get("scene_index", 1))
+        manifest = json_read(manifest_path, {})
+        settings = get_video_settings()
+        voice = (data.get("voice") or manifest.get("config", {}).get("voice") or settings["voice"]).strip()
+
+        storyboard = json_read(storyboard_path, {})
+        scene = next((s for s in storyboard.get("scenes", []) if s["scene_index"] == s_idx), None)
+        if not scene:
+            return jsonify({"error": "未找到指定分镜"}), 404
+
+        if data.get("narration_text"):
+            scene["narration_text"] = str(data["narration_text"]).strip()
+            scene["subtitle_text"] = scene["narration_text"]
+
+        a_file, dur, warn = generate_scene_audio(scene, job_dir, voice)
+        scene["audio_file"] = a_file
+        scene["actual_duration_sec"] = dur
+        json_write(storyboard_path, storyboard)
+
+        # 重建字幕
+        srt_path = job_dir / "subtitles" / "subtitles.srt"
+        build_subtitles(storyboard, srt_path)
+
+        return jsonify({"success": True, "scene": scene_urls(job_id, scene), "warning": warn})
 
     @app.route("/video-jobs/<job_id>/<path:filename>", methods=["GET"])
     def serve_video_job_asset(job_id: str, filename: str):

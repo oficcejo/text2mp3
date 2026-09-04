@@ -66,13 +66,66 @@ CLONED_VOICES_DIR = Path("cloned_voices")
 CLONED_VOICES_DIR.mkdir(exist_ok=True)
 CLONED_VOICES_INDEX = CLONED_VOICES_DIR / "index.json"
 
-# 内置音色列表（v2.5-tts）
+DESIGNED_VOICES_DIR = Path("designed_voices")
+DESIGNED_VOICES_DIR.mkdir(exist_ok=True)
+DESIGNED_VOICES_INDEX = DESIGNED_VOICES_DIR / "index.json"
+
+# 内置音色列表（v2.5-tts，来自小米 MiMo TTS 官方全集文档）
 BUILTIN_VOICES = {
-    "mimo_default": "MiMo 默认音色",
-    "Mia": "Mia（英语女声）",
-    "Chloe": "Chloe（英语女声）",
-    "Milo": "Milo（英语男声）",
-    "Dean": "Dean（英语男声）",
+    "mimo_default": {
+        "name": "MiMo-默认",
+        "gender": "女",
+        "lang": "中文",
+        "desc": "智能自适应 (国内默认冰糖/海外Mia)",
+    },
+    "冰糖": {
+        "name": "冰糖",
+        "gender": "女",
+        "lang": "中文",
+        "desc": "甜美清澈 · 适合小说散文、艺术朗读、生活Vlog",
+    },
+    "茉莉": {
+        "name": "茉莉",
+        "gender": "女",
+        "lang": "中文",
+        "desc": "温柔典雅 · 适合有声书、情感电台、散文旁白",
+    },
+    "苏打": {
+        "name": "苏打",
+        "gender": "男",
+        "lang": "中文",
+        "desc": "阳光活力 · 适合科技科普、新闻播报、短视频叙事",
+    },
+    "白桦": {
+        "name": "白桦",
+        "gender": "男",
+        "lang": "中文",
+        "desc": "沉稳磁性 · 适合历史传记、财经解说、庄重纪录片",
+    },
+    "Mia": {
+        "name": "Mia",
+        "gender": "女",
+        "lang": "英文",
+        "desc": "自然温暖 · 适合故事叙事、日常会话",
+    },
+    "Chloe": {
+        "name": "Chloe",
+        "gender": "女",
+        "lang": "英文",
+        "desc": "轻快活泼 · 适合快节奏解说、现代对话",
+    },
+    "Milo": {
+        "name": "Milo",
+        "gender": "男",
+        "lang": "英文",
+        "desc": "沉稳专业 · 适合商业演示、说明文",
+    },
+    "Dean": {
+        "name": "Dean",
+        "gender": "男",
+        "lang": "英文",
+        "desc": "磁性低沉 · 适合影视解说、深夜广播",
+    },
 }
 
 # V2 兼容音色
@@ -202,6 +255,55 @@ def get_cloned_voice_info(voice_id: str) -> dict:
 
 
 # ============================================================
+# 音色设计（Voice Design）存储
+# ============================================================
+def load_designed_voices():
+    """加载已保存的设计音色列表"""
+    if DESIGNED_VOICES_INDEX.exists():
+        try:
+            return json.loads(DESIGNED_VOICES_INDEX.read_text(encoding="utf-8"))
+        except Exception:
+            return []
+    return []
+
+
+def save_designed_voice(voice_id: str, info: dict):
+    """保存设计音色记录"""
+    voices = load_designed_voices()
+    voices = [v for v in voices if v.get("id") != voice_id]
+    voices.insert(0, info)
+    DESIGNED_VOICES_INDEX.write_text(
+        json.dumps(voices, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
+
+
+def delete_designed_voice(voice_id: str):
+    """删除设计音色及其音频样本"""
+    voices = load_designed_voices()
+    voices = [v for v in voices if v.get("id") != voice_id]
+    DESIGNED_VOICES_INDEX.write_text(
+        json.dumps(voices, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
+    voice_dir = DESIGNED_VOICES_DIR / voice_id
+    if voice_dir.exists():
+        import shutil
+        shutil.rmtree(str(voice_dir), ignore_errors=True)
+
+
+def get_designed_voice(voice_id: str) -> dict:
+    """获取单个设计音色信息"""
+    voices = load_designed_voices()
+    for v in voices:
+        if v.get("id") == voice_id:
+            return v
+    # 尝试直接读目录
+    info_path = DESIGNED_VOICES_DIR / voice_id / "info.json"
+    if info_path.exists():
+        return json.loads(info_path.read_text(encoding="utf-8"))
+    raise FileNotFoundError(f"设计音色 {voice_id} 不存在")
+
+
+# ============================================================
 # 进度状态类
 # ============================================================
 class ProgressEvent:
@@ -314,6 +416,26 @@ def call_mimo_tts(
         "Content-Type": "application/json",
     }
 
+    # 支持 designed: 和 cloned: 前缀直接传入
+    if voice and isinstance(voice, str) and voice.startswith("designed:"):
+        design_id = voice.split(":", 1)[1]
+        try:
+            d_voice = get_designed_voice(design_id)
+            model = "mimo-v2.5-tts-voicedesign"
+            if not style_instruction:
+                style_instruction = d_voice.get("prompt", "")
+        except Exception as e:
+            print(f"获取设计音色失败: {e}", flush=True)
+    elif voice and isinstance(voice, str) and voice.startswith("cloned:"):
+        clone_id = voice.split(":", 1)[1]
+        try:
+            model = "mimo-v2.5-tts-voiceclone"
+            sample_bytes = get_cloned_voice_sample(clone_id)
+            voice_audio_base64 = base64.b64encode(sample_bytes).decode("utf-8")
+            voice_audio_mime = "audio/wav"
+        except Exception as e:
+            print(f"获取克隆音色失败: {e}", flush=True)
+
     # 构建 messages
     messages = []
 
@@ -360,7 +482,7 @@ def call_mimo_tts(
         audio_params["voice"] = f"data:{voice_audio_mime};base64,{voice_audio_base64}"
     elif model == "mimo-v2.5-tts-voicedesign":
         pass
-    elif voice:
+    elif voice and not str(voice).startswith(("cloned:", "designed:")):
         audio_params["voice"] = voice
 
     payload = {
@@ -499,6 +621,10 @@ register_video_mvp_routes(app, {
     "output_dir": OUTPUT_DIR,
     "get_cloned_voice_sample": get_cloned_voice_sample,
     "call_mimo_tts": call_mimo_tts,
+    "load_cloned_voices": load_cloned_voices,
+    "load_designed_voices": load_designed_voices,
+    "get_designed_voice": get_designed_voice,
+    "builtin_voices": BUILTIN_VOICES,
 })
 
 
@@ -893,6 +1019,104 @@ def api_delete_cloned_voice(voice_id):
         return jsonify({"success": True})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
+
+
+# ---------------------------------------------------------------
+# 音色设计（Voice Design）管理
+# ---------------------------------------------------------------
+@app.route("/api/designed-voices", methods=["GET"])
+def api_designed_voices():
+    """返回已设计音色列表"""
+    voices = load_designed_voices()
+    for v in voices:
+        v["sample_url"] = f"/api/designed-voices/{v['id']}/sample"
+    return jsonify({"voices": voices})
+
+
+@app.route("/api/designed-voices/<voice_id>/sample", methods=["GET"])
+def api_designed_voice_sample(voice_id):
+    """获取设计音色样本音频供试听"""
+    voice_dir = DESIGNED_VOICES_DIR / voice_id
+    for ext, mime in [(".wav", "audio/wav"), (".mp3", "audio/mpeg")]:
+        sample_path = voice_dir / f"sample{ext}"
+        if sample_path.exists():
+            return send_file(str(sample_path), mimetype=mime)
+    return jsonify({"error": "设计音色样本文件不存在"}), 404
+
+
+@app.route("/api/designed-voices", methods=["POST"])
+def api_save_designed_voice():
+    """保存自设计音色"""
+    data = request.get_json(force=True)
+    name = (data.get("name") or "").strip()
+    prompt = (data.get("prompt") or "").strip()
+    tags = data.get("tags") or []
+    sample_b64 = data.get("sample_base64")
+
+    if not name:
+        return jsonify({"error": "请输入音色名称"}), 400
+    if not prompt:
+        return jsonify({"error": "请输入音色描述 Prompt"}), 400
+
+    voice_id = f"des_{uuid.uuid4().hex[:8]}"
+    voice_dir = DESIGNED_VOICES_DIR / voice_id
+    voice_dir.mkdir(parents=True, exist_ok=True)
+
+    if sample_b64:
+        try:
+            (voice_dir / "sample.wav").write_bytes(base64.b64decode(sample_b64))
+        except Exception as e:
+            print(f"保存设计音色样本失败: {e}", flush=True)
+
+    info = {
+        "id": voice_id,
+        "name": name,
+        "prompt": prompt,
+        "tags": tags,
+        "created_at": datetime.now().isoformat(),
+    }
+    (voice_dir / "info.json").write_text(json.dumps(info, ensure_ascii=False, indent=2), encoding="utf-8")
+    save_designed_voice(voice_id, info)
+
+    info["sample_url"] = f"/api/designed-voices/{voice_id}/sample"
+    return jsonify({"success": True, "voice": info})
+
+
+@app.route("/api/designed-voices/<voice_id>", methods=["DELETE"])
+def api_delete_designed_voice(voice_id):
+    """删除设计音色"""
+    try:
+        delete_designed_voice(voice_id)
+        return jsonify({"success": True})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/tts/voicedesign/preview", methods=["POST"])
+def api_voicedesign_preview():
+    """在线试听设计音色"""
+    data = request.get_json(force=True)
+    prompt = (data.get("prompt") or "").strip()
+    text = (data.get("text") or "").strip() or "你好，这是通过音色设计生成的专属人声试听。"
+    if not prompt:
+        return jsonify({"error": "请输入音色描述 Prompt"}), 400
+
+    try:
+        audio_bytes, _ = call_mimo_tts(
+            model="mimo-v2.5-tts-voicedesign",
+            text=text,
+            style_instruction=prompt,
+            audio_format="wav",
+            stream=False,
+        )
+        audio_b64 = base64.b64encode(audio_bytes).decode("utf-8")
+        return jsonify({
+            "success": True,
+            "audio_base64": audio_b64,
+            "format": "wav",
+        })
+    except Exception as e:
+        return jsonify({"error": f"试听生成失败: {str(e)}"}), 500
 
 
 # ---------------------------------------------------------------

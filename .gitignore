@@ -26,6 +26,7 @@ env/
 # ── 运行时生成数据 ───────────────────────────
 output/
 cloned_voices/
+designed_voices/
 history.json
 jobs/
 

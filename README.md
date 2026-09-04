@@ -86,7 +86,7 @@
 
 参考 `.env.example`。
 
-### MiMo TTS
+### MiMo TTS目前免费，但至少冲上10元吧，获取apikey
 
 ```env
 MIMO_API_KEY=

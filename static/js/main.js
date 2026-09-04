@@ -7,6 +7,9 @@ let timerInterval = null;
 let startTime = null;
 let currentVideoJobId = null;
 let currentVideoPollTimer = null;
+let currentDesignAudioBase64 = null;
+let currentVoicePreviewAudio = null;
+let currentVoicePreviewId = null;
 
 // ============================================================
 // 初始化
@@ -16,11 +19,14 @@ document.addEventListener('DOMContentLoaded', function() {
     setupCharCounters();
     loadHistory();
     loadClonedVoicesList();
-    updateVideoVoiceList();
+    loadDesignedVoices();
+    updateAllVoiceDropdowns();
+    loadProjectCount();
     loadVideoConfig();
     setupTabSwitching();
     setupModelSelector();
     setupFileUpload();
+    setupProjectNameInput();
 });
 
 // ============================================================
@@ -101,13 +107,17 @@ function setupTabSwitching() {
             this.classList.add('active');
 
             document.querySelectorAll('.tab-content').forEach(t => t.classList.remove('active'));
-            document.getElementById('tab-' + tab).classList.add('active');
+            const targetTab = document.getElementById('tab-' + tab);
+            if (targetTab) targetTab.classList.add('active');
 
             if (tab === 'voiceclone') {
                 loadClonedVoicesList();
             } else if (tab === 'video') {
                 loadVideoConfig();
-                updateVideoVoiceList();
+                updateAllVoiceDropdowns();
+                loadProjectCount();
+            } else if (tab === 'voicedesign') {
+                loadDesignedVoices();
             }
         });
     });
@@ -149,46 +159,117 @@ function setupModelSelector() {
     });
 }
 
+function populateVoiceSelect(selectEl, voicesData, clonedVoices, designedVoices, currentValue) {
+    if (!selectEl) return;
+    const previousVal = currentValue !== undefined ? currentValue : selectEl.value;
+    selectEl.innerHTML = '';
+
+    // 1. 中文官方预置
+    const zhGroup = document.createElement('optgroup');
+    zhGroup.label = '官方预置音色 (中文)';
+    // 2. 英文官方预置
+    const enGroup = document.createElement('optgroup');
+    enGroup.label = '官方预置音色 (英文)';
+
+    for (const [id, info] of Object.entries(voicesData)) {
+        const opt = document.createElement('option');
+        opt.value = id;
+        const name = typeof info === 'object' ? (info.name || id) : info;
+        const desc = typeof info === 'object' && info.desc ? ` - ${info.desc}` : '';
+        opt.textContent = `${name}${desc}`;
+
+        const lang = typeof info === 'object' ? (info.lang || '') : '';
+        if (lang === '英文' || ['Mia', 'Chloe', 'Milo', 'Dean'].includes(id)) {
+            enGroup.appendChild(opt);
+        } else {
+            zhGroup.appendChild(opt);
+        }
+    }
+
+    if (zhGroup.children.length > 0) selectEl.appendChild(zhGroup);
+    if (enGroup.children.length > 0) selectEl.appendChild(enGroup);
+
+    // 3. 我的设计音色 (Voice Design)
+    if (designedVoices && designedVoices.length > 0) {
+        const desGroup = document.createElement('optgroup');
+        desGroup.label = '我的设计音色 (Voice Design)';
+        for (const dv of designedVoices) {
+            const opt = document.createElement('option');
+            opt.value = 'designed:' + dv.id;
+            const promptPreview = dv.prompt ? (dv.prompt.length > 20 ? dv.prompt.slice(0, 20) + '...' : dv.prompt) : '';
+            opt.textContent = `✨ ${dv.name}${promptPreview ? ` (${promptPreview})` : ''}`;
+            desGroup.appendChild(opt);
+        }
+        selectEl.appendChild(desGroup);
+    }
+
+    // 4. 我的克隆音色 (Voice Clone)
+    if (clonedVoices && clonedVoices.length > 0) {
+        const cloneGroup = document.createElement('optgroup');
+        cloneGroup.label = '我的克隆音色 (Voice Clone)';
+        for (const cv of clonedVoices) {
+            const opt = document.createElement('option');
+            opt.value = 'cloned:' + cv.id;
+            opt.textContent = `🧬 ${cv.name}` + (cv.original_filename ? ` (${cv.original_filename})` : '');
+            cloneGroup.appendChild(opt);
+        }
+        selectEl.appendChild(cloneGroup);
+    }
+
+    if (previousVal && Array.from(selectEl.options).some(o => o.value === previousVal)) {
+        selectEl.value = previousVal;
+    } else {
+        selectEl.value = 'mimo_default';
+    }
+}
+
+async function updateAllVoiceDropdowns() {
+    try {
+        const [voicesRes, clonedRes, designedRes] = await Promise.all([
+            fetch('/api/voices?model=mimo-v2.5-tts').then(r => r.json()).catch(() => ({ voices: {} })),
+            fetch('/api/cloned-voices').then(r => r.json()).catch(() => ({ voices: [] })),
+            fetch('/api/designed-voices').then(r => r.json()).catch(() => ({ voices: [] })),
+        ]);
+
+        const voicesData = voicesRes.voices || {};
+        const clonedVoices = clonedRes.voices || [];
+        const designedVoices = designedRes.voices || [];
+
+        const synthSelect = document.getElementById('voiceSelect');
+        if (synthSelect) {
+            populateVoiceSelect(synthSelect, voicesData, clonedVoices, designedVoices);
+        }
+
+        const videoSelect = document.getElementById('videoVoiceSelect');
+        if (videoSelect) {
+            populateVoiceSelect(videoSelect, voicesData, clonedVoices, designedVoices);
+        }
+
+        const changeVoiceSelect = document.getElementById('videoChangeVoiceSelect');
+        if (changeVoiceSelect) {
+            populateVoiceSelect(changeVoiceSelect, voicesData, clonedVoices, designedVoices);
+        }
+    } catch (e) {
+        console.error('更新音色下拉菜单失败:', e);
+    }
+}
+
 async function updateVoiceList(model) {
+    if (model === 'mimo-v2.5-tts') {
+        return updateAllVoiceDropdowns();
+    }
     try {
         const resp = await fetch(`/api/voices?model=${model}`);
         const data = await resp.json();
         const select = document.getElementById('voiceSelect');
+        if (!select) return;
         select.innerHTML = '';
         const voices = data.voices || {};
 
-        // 加载已克隆音色
-        let clonedVoices = [];
-        try {
-            const cvResp = await fetch('/api/cloned-voices');
-            const cvData = await cvResp.json();
-            clonedVoices = cvData.voices || [];
-        } catch(e) {}
-
-        if (Object.keys(voices).length === 0) {
-            if (clonedVoices.length === 0) {
-                select.innerHTML = '<option value="">该模型无内置音色</option>';
-                return;
-            }
-        }
-
-        // 已克隆音色分组
-        if (clonedVoices.length > 0) {
-            const cloneGroup = document.createElement('optgroup');
-            cloneGroup.label = '已克隆音色';
-            for (const cv of clonedVoices) {
-                const opt = document.createElement('option');
-                opt.value = 'cloned:' + cv.id;
-                opt.textContent = cv.name + (cv.original_filename ? ' (' + cv.original_filename + ')' : '');
-                cloneGroup.appendChild(opt);
-            }
-            select.appendChild(cloneGroup);
-        }
-
-        for (const [id, name] of Object.entries(voices)) {
+        for (const [id, val] of Object.entries(voices)) {
             const opt = document.createElement('option');
             opt.value = id;
-            opt.textContent = name;
+            opt.textContent = typeof val === 'object' ? (val.name || id) : val;
             select.appendChild(opt);
         }
     } catch(e) {
@@ -196,54 +277,8 @@ async function updateVoiceList(model) {
     }
 }
 
-
 async function updateVideoVoiceList() {
-    const select = document.getElementById('videoVoiceSelect');
-    if (!select) return;
-
-    const currentValue = select.value;
-    const builtinVoices = {
-        mimo_default: 'MiMo 默认音色',
-        Mia: 'Mia（英语女声）',
-        Chloe: 'Chloe（英语女声）',
-        Milo: 'Milo（英语男声）',
-        Dean: 'Dean（英语男声）',
-    };
-
-    select.innerHTML = '';
-
-    try {
-        const resp = await fetch('/api/cloned-voices');
-        const data = await resp.json();
-        const clonedVoices = data.voices || [];
-
-        if (clonedVoices.length > 0) {
-            const cloneGroup = document.createElement('optgroup');
-            cloneGroup.label = '已克隆音色';
-            for (const cv of clonedVoices) {
-                const opt = document.createElement('option');
-                opt.value = 'cloned:' + cv.id;
-                opt.textContent = cv.name + (cv.original_filename ? ' (' + cv.original_filename + ')' : '');
-                cloneGroup.appendChild(opt);
-            }
-            select.appendChild(cloneGroup);
-        }
-    } catch (e) {
-        console.error('加载视频音色失败:', e);
-    }
-
-    const builtinGroup = document.createElement('optgroup');
-    builtinGroup.label = '内置音色';
-    for (const [id, name] of Object.entries(builtinVoices)) {
-        const opt = document.createElement('option');
-        opt.value = id;
-        opt.textContent = name;
-        builtinGroup.appendChild(opt);
-    }
-    select.appendChild(builtinGroup);
-
-    const matched = Array.from(select.options).some(opt => opt.value === currentValue);
-    select.value = matched ? currentValue : 'mimo_default';
+    return updateAllVoiceDropdowns();
 }
 
 // ============================================================
@@ -803,59 +838,6 @@ function cancelCloneSynthesis() {
 // 文生视频
 // ============================================================
 
-async function updateVideoVoiceList() {
-    const select = document.getElementById('videoVoiceSelect');
-    if (!select) return;
-
-    try {
-        const resp = await fetch('/api/voices?model=mimo-v2.5-tts');
-        const data = await resp.json();
-        const voices = data.voices || {};
-
-        let clonedVoices = [];
-        try {
-            const cvResp = await fetch('/api/cloned-voices');
-            const cvData = await cvResp.json();
-            clonedVoices = cvData.voices || [];
-        } catch (e) {}
-
-        const currentVal = select.value;
-        select.innerHTML = '';
-
-        // 官方预置音色
-        const officialGroup = document.createElement('optgroup');
-        officialGroup.label = '官方预置音色';
-        for (const [key, val] of Object.entries(voices)) {
-            const opt = document.createElement('option');
-            opt.value = key;
-            opt.textContent = `${val.name || key} (${val.desc || ''})`;
-            officialGroup.appendChild(opt);
-        }
-        select.appendChild(officialGroup);
-
-        // 已克隆音色
-        if (clonedVoices.length > 0) {
-            const cloneGroup = document.createElement('optgroup');
-            cloneGroup.label = '已保存克隆音色';
-            for (const cv of clonedVoices) {
-                const opt = document.createElement('option');
-                opt.value = 'cloned:' + cv.id;
-                opt.textContent = `[克隆] ${cv.name || cv.id}`;
-                cloneGroup.appendChild(opt);
-            }
-            select.appendChild(cloneGroup);
-        }
-
-        if (currentVal && Array.from(select.options).some(o => o.value === currentVal)) {
-            select.value = currentVal;
-        } else {
-            select.value = 'mimo_default';
-        }
-    } catch (e) {
-        console.warn('加载视频配音列表失败:', e);
-    }
-}
-
 async function loadVideoConfig() {
     const openaiStatus = document.getElementById('videoOpenAIStatus');
     const ffmpegStatus = document.getElementById('videoFfmpegStatus');
@@ -1081,6 +1063,18 @@ function renderVideoJob(job) {
         subtitleBtn.classList.add('hidden');
     }
 
+    // 同步项目名称到工具栏输入框
+    const nameInput = document.getElementById('videoProjectNameInput');
+    if (nameInput && (!nameInput.dataset.focused || nameInput.dataset.focused === 'false')) {
+        nameInput.value = job.project_name || (job.scenes && job.scenes[0] ? job.scenes[0].title : '') || job.job_id;
+    }
+
+    // 同步当前更换配音音色下拉框
+    const changeSelect = document.getElementById('videoChangeVoiceSelect');
+    if (changeSelect && job.config && job.config.voice) {
+        changeSelect.value = job.config.voice;
+    }
+
     const scenes = job.scenes || [];
     const groups = [];
     for (const scene of scenes) {
@@ -1104,16 +1098,18 @@ function renderVideoJob(job) {
         <div class="storyboard-group-card">
             <div class="storyboard-group-image">
                 ${group.image_url ? `<img src="${group.image_url}" alt="漫画组 ${group.key}">` : ''}
-                <div class="storyboard-group-badge">组 ${group.key}</div>
+                <div class="storyboard-group-badge">画面组 ${group.key}</div>
             </div>
             <div class="storyboard-group-body">
                 ${group.scenes.map(scene => `
-                    <div class="storyboard-scene-item">
+                    <div class="storyboard-scene-item" data-scene-index="${scene.scene_index}">
                         <div class="storyboard-scene-head">
-                            <span class="storyboard-scene-title">${escapeHtml(scene.title || `分镜 ${scene.scene_index}`)}</span>
+                            <span class="storyboard-scene-title">分镜 ${scene.scene_index}：${escapeHtml(scene.title || '')}</span>
                             <span class="storyboard-scene-meta">${scene.actual_duration_sec ? `${scene.actual_duration_sec}s` : ''}</span>
                         </div>
-                        <div class="storyboard-scene-text">${escapeHtml(scene.subtitle_text || scene.narration_text || '')}</div>
+                        <div style="margin-top:6px;">
+                            <textarea class="form-textarea storyboard-scene-text-edit" rows="2" style="font-size:13px;padding:6px 8px;resize:vertical;" placeholder="分镜台词 / 字幕内容">${escapeHtml(scene.subtitle_text || scene.narration_text || '')}</textarea>
+                        </div>
                     </div>
                 `).join('')}
             </div>
@@ -1464,5 +1460,509 @@ function formatTime(isoStr) {
         return `${month}-${day} ${hours}:${mins}`;
     } catch {
         return isoStr;
+    }
+}
+
+// ============================================================
+// 音色设计 (Voice Design) 模块
+// ============================================================
+
+function addDesignPromptTag(tag) {
+    const promptInput = document.getElementById('designVoicePrompt');
+    if (!promptInput) return;
+    const current = promptInput.value.trim();
+    if (!current) {
+        promptInput.value = tag + '，';
+    } else if (current.endsWith('，') || current.endsWith(',') || current.endsWith('。')) {
+        promptInput.value = current + tag + '，';
+    } else {
+        promptInput.value = current + '，' + tag + '，';
+    }
+    promptInput.focus();
+}
+
+async function previewVoiceDesign() {
+    const prompt = document.getElementById('designVoicePrompt').value.trim();
+    const text = document.getElementById('designVoiceText').value.trim();
+    const btn = document.getElementById('designPreviewBtn');
+    const saveBtn = document.getElementById('designSaveBtn');
+    const playerBox = document.getElementById('designPlayerBox');
+    const audioPlayer = document.getElementById('designAudioPlayer');
+
+    if (!prompt) {
+        showToast('请先输入音色描述 Prompt', 'warn');
+        return;
+    }
+    if (!text) {
+        showToast('请输入试听测试文本', 'warn');
+        return;
+    }
+
+    const origHtml = btn.innerHTML;
+    btn.disabled = true;
+    btn.innerHTML = `<span style="display:inline-block;width:14px;height:14px;border:2px solid #fff;border-top-color:transparent;border-radius:50%;animation:spin 1s linear infinite;margin-right:6px;vertical-align:middle"></span> 正在生成专属试听...`;
+
+    try {
+        const resp = await fetch('/api/tts/voicedesign/preview', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ prompt, text })
+        });
+        const data = await resp.json();
+        if (!resp.ok || !data.success) {
+            throw new Error(data.error || '试听生成失败');
+        }
+
+        currentDesignAudioBase64 = data.audio_base64;
+        audioPlayer.src = 'data:audio/wav;base64,' + data.audio_base64;
+        playerBox.classList.remove('hidden');
+        audioPlayer.play().catch(() => {});
+
+        saveBtn.disabled = false;
+        showToast('音色试听生成完成，满意可点击「保存到我的音色库」', 'success');
+    } catch (e) {
+        showToast(e.message || '试听生成失败', 'error');
+    } finally {
+        btn.disabled = false;
+        btn.innerHTML = origHtml;
+    }
+}
+
+async function saveCurrentDesignedVoice() {
+    let name = document.getElementById('designVoiceName').value.trim();
+    const prompt = document.getElementById('designVoicePrompt').value.trim();
+    const saveBtn = document.getElementById('designSaveBtn');
+
+    if (!prompt) {
+        showToast('请先输入音色描述 Prompt', 'warn');
+        return;
+    }
+    if (!name) {
+        name = prompt.slice(0, 10);
+        document.getElementById('designVoiceName').value = name;
+    }
+
+    saveBtn.disabled = true;
+    const origHtml = saveBtn.innerHTML;
+    saveBtn.innerHTML = '正在保存...';
+
+    try {
+        const resp = await fetch('/api/designed-voices', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                name,
+                prompt,
+                sample_base64: currentDesignAudioBase64
+            })
+        });
+        const data = await resp.json();
+        if (!resp.ok || !data.success) {
+            throw new Error(data.error || '保存音色失败');
+        }
+
+        showToast(`专属音色「${name}」已保存到音色库！`, 'success');
+        await loadDesignedVoices();
+        await updateAllVoiceDropdowns();
+    } catch (e) {
+        showToast(e.message || '保存失败', 'error');
+    } finally {
+        saveBtn.disabled = false;
+        saveBtn.innerHTML = origHtml;
+    }
+}
+
+async function loadDesignedVoices() {
+    const grid = document.getElementById('designedVoicesGrid');
+    if (!grid) return;
+
+    try {
+        const resp = await fetch('/api/designed-voices');
+        const data = await resp.json();
+        const voices = data.voices || [];
+
+        if (voices.length === 0) {
+            grid.innerHTML = '<p style="color:var(--gray-500);font-size:13px;grid-column:1/-1;">暂无保存的设计音色，在上方设计并保存后可在此查看并随时在配音或视频中使用。</p>';
+            return;
+        }
+
+        grid.innerHTML = voices.map(v => {
+            const isPlaying = currentVoicePreviewId === ('des_' + v.id);
+            const sampleUrl = v.sample_url || `/api/designed-voices/${v.id}/sample`;
+            return `
+                <div class="designed-voice-card ${isPlaying ? 'playing' : ''}">
+                    <div class="designed-voice-header">
+                        <span class="designed-voice-title">${escapeHtml(v.name)}</span>
+                        <div style="display:flex;gap:4px;">
+                            <button type="button" class="btn-icon" title="${isPlaying ? '暂停' : '试听样本'}" onclick="togglePreviewDesignedVoice('${v.id}', '${sampleUrl}')">
+                                ${isPlaying
+                                    ? `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="6" y="4" width="4" height="16"/><rect x="14" y="4" width="4" height="16"/></svg>`
+                                    : `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="5 3 19 12 5 21 5 3"/></svg>`}
+                            </button>
+                            <button type="button" class="btn-icon" title="删除" onclick="deleteDesignedVoice('${v.id}')">
+                                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
+                            </button>
+                        </div>
+                    </div>
+                    <div class="designed-voice-prompt" title="${escapeHtml(v.prompt)}">${escapeHtml(v.prompt)}</div>
+                    <div class="designed-voice-actions">
+                        <span style="font-size:11px;color:var(--gray-400);">${formatTime(v.created_at)}</span>
+                        <div style="display:flex;gap:6px;">
+                            <button type="button" class="btn btn-sm btn-ghost" onclick="useDesignedVoiceInVideo('${v.id}')">用于视频</button>
+                            <button type="button" class="btn btn-sm btn-ghost" onclick="useDesignedVoiceInSynth('${v.id}')">用于配音</button>
+                        </div>
+                    </div>
+                </div>
+            `;
+        }).join('');
+    } catch (e) {
+        console.error('加载设计音色库失败:', e);
+    }
+}
+
+function togglePreviewDesignedVoice(id, url) {
+    const key = 'des_' + id;
+    if (currentVoicePreviewId === key && currentVoicePreviewAudio) {
+        currentVoicePreviewAudio.pause();
+        currentVoicePreviewAudio = null;
+        currentVoicePreviewId = null;
+        loadDesignedVoices();
+        return;
+    }
+
+    if (currentVoicePreviewAudio) {
+        currentVoicePreviewAudio.pause();
+    }
+
+    currentVoicePreviewAudio = new Audio(url);
+    currentVoicePreviewId = key;
+    currentVoicePreviewAudio.play().catch(() => {});
+    currentVoicePreviewAudio.onended = () => {
+        currentVoicePreviewId = null;
+        currentVoicePreviewAudio = null;
+        loadDesignedVoices();
+    };
+    loadDesignedVoices();
+}
+
+async function deleteDesignedVoice(voiceId) {
+    if (!confirm('确定要删除这个自设计音色吗？')) return;
+    try {
+        const resp = await fetch(`/api/designed-voices/${voiceId}`, { method: 'DELETE' });
+        if (resp.ok) {
+            showToast('音色已删除', 'success');
+            await loadDesignedVoices();
+            await updateAllVoiceDropdowns();
+        } else {
+            showToast('删除失败', 'error');
+        }
+    } catch (e) {
+        showToast('删除失败', 'error');
+    }
+}
+
+function useDesignedVoiceInVideo(voiceId) {
+    const videoNav = document.querySelector('.nav-item[data-tab="video"]');
+    if (videoNav) videoNav.click();
+    const select = document.getElementById('videoVoiceSelect');
+    if (select) {
+        select.value = 'designed:' + voiceId;
+    }
+    const changeSelect = document.getElementById('videoChangeVoiceSelect');
+    if (changeSelect) {
+        changeSelect.value = 'designed:' + voiceId;
+    }
+    showToast('已选中该设计音色作为视频配音', 'info');
+}
+
+function useDesignedVoiceInSynth(voiceId) {
+    const synthNav = document.querySelector('.nav-item[data-tab="synthesize"]');
+    if (synthNav) synthNav.click();
+    const ttsModelOpt = document.querySelector('.model-option[data-model="mimo-v2.5-tts"]');
+    if (ttsModelOpt) ttsModelOpt.click();
+    const voiceSelect = document.getElementById('voiceSelect');
+    if (voiceSelect) {
+        voiceSelect.value = 'designed:' + voiceId;
+    }
+    showToast('已切换至语音合成并应用该设计音色', 'info');
+}
+
+// ============================================================
+// 文生视频项目管理 & 一键更换配音
+// ============================================================
+
+function setupProjectNameInput() {
+    const input = document.getElementById('videoProjectNameInput');
+    if (input) {
+        input.addEventListener('focus', () => { input.dataset.focused = 'true'; });
+        input.addEventListener('blur', () => { input.dataset.focused = 'false'; });
+        input.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter') {
+                e.preventDefault();
+                saveCurrentVideoProject();
+            }
+        });
+    }
+
+    // 模态弹窗点击外部与 ESC 键关闭
+    window.addEventListener('keydown', (e) => {
+        if (e.key === 'Escape') closeProjectListModal();
+    });
+    const modal = document.getElementById('projectListModal');
+    if (modal) {
+        modal.addEventListener('click', (e) => {
+            if (e.target === modal) closeProjectListModal();
+        });
+    }
+}
+
+async function saveCurrentVideoProject() {
+    if (!currentVideoJobId) {
+        showToast('当前没有进行中的视频工程', 'warn');
+        return;
+    }
+    const nameInput = document.getElementById('videoProjectNameInput');
+    const projectName = nameInput ? nameInput.value.trim() : '';
+    if (!projectName) {
+        showToast('请输入工程名称', 'warn');
+        return;
+    }
+
+    try {
+        const resp = await fetch(`/api/video/jobs/${currentVideoJobId}/save`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ project_name: projectName })
+        });
+        const data = await resp.json();
+        if (!resp.ok || !data.success) throw new Error(data.error || '保存项目失败');
+        showToast(`工程名称已更新为「${projectName}」`, 'success');
+        await loadProjectCount();
+    } catch (e) {
+        showToast(e.message || '保存失败', 'error');
+    }
+}
+
+async function loadProjectCount() {
+    const badge = document.getElementById('videoProjectCount');
+    if (!badge) return;
+    try {
+        const resp = await fetch('/api/video/jobs');
+        const data = await resp.json();
+        const jobs = data.jobs || [];
+        badge.textContent = jobs.length;
+    } catch (e) {}
+}
+
+async function openProjectListModal() {
+    const modal = document.getElementById('projectListModal');
+    const body = document.getElementById('projectModalListBody');
+    if (!modal || !body) return;
+
+    modal.classList.add('show');
+    modal.classList.add('active');
+    body.innerHTML = '<div style="text-align:center;padding:30px;color:var(--gray-500);"><span style="display:inline-block;width:16px;height:16px;border:2px solid currentColor;border-top-color:transparent;border-radius:50%;animation:spin 1s linear infinite;margin-right:8px;vertical-align:middle"></span> 正在读取视频工程...</div>';
+
+    try {
+        const resp = await fetch('/api/video/jobs');
+        const data = await resp.json();
+        const jobs = data.jobs || [];
+
+        if (jobs.length === 0) {
+            body.innerHTML = '<div style="text-align:center;padding:40px;color:var(--gray-500);">暂无历史视频工程，在上方输入文章并生成视频后将自动保存到此处。</div>';
+            return;
+        }
+
+        body.innerHTML = `
+            <div class="project-list-container">
+                ${jobs.map(job => {
+                    const isCurrent = job.job_id === currentVideoJobId;
+                    const name = job.project_name || (job.scenes && job.scenes[0] ? job.scenes[0].title : '') || job.job_id;
+                    const thumb = job.thumbnail_url || (job.scenes && job.scenes[0] ? (job.scenes[0].image_url || job.scenes[0].frame_url) : '');
+                    const statusText = mapVideoJobStatus(job.status);
+                    const dur = job.duration ? `${Math.round(job.duration)}秒` : (job.scenes_count ? `${job.scenes_count}分镜` : '');
+
+                    return `
+                        <div class="project-item ${isCurrent ? 'active-job' : ''}">
+                            <div class="project-thumb">
+                                ${thumb ? `<img src="${thumb}" alt="封面">` : `<span style="font-size:24px;">🎬</span>`}
+                            </div>
+                            <div class="project-meta">
+                                <div class="project-meta-title" title="${escapeHtml(name)}">
+                                    ${escapeHtml(name)}
+                                    ${isCurrent ? '<span style="font-size:11px;background:#dbeafe;color:#1d4ed8;padding:1px 6px;border-radius:4px;margin-left:6px;">当前工程</span>' : ''}
+                                </div>
+                                <div class="project-meta-sub">
+                                    <span>状态: <strong>${statusText}</strong></span>
+                                    ${dur ? `<span>时长: ${dur}</span>` : ''}
+                                    <span>时间: ${formatTime(job.created_at)}</span>
+                                </div>
+                            </div>
+                            <div class="project-actions">
+                                <button class="btn btn-primary btn-sm" onclick="loadVideoJob('${job.job_id}')">
+                                    ${isCurrent ? '刷新查看' : '打开工程'}
+                                </button>
+                                <button class="btn btn-outline btn-sm" style="color:var(--danger,#ef4444);border-color:#fca5a5;" title="删除工程" onclick="deleteVideoProject('${job.job_id}')">
+                                    删除
+                                </button>
+                            </div>
+                        </div>
+                    `;
+                }).join('')}
+            </div>
+        `;
+    } catch (e) {
+        body.innerHTML = `<div style="text-align:center;padding:30px;color:var(--danger-color,#ef4444);">加载项目列表失败: ${escapeHtml(e.message)}</div>`;
+    }
+}
+
+function closeProjectListModal() {
+    const modal = document.getElementById('projectListModal');
+    if (modal) {
+        modal.classList.remove('show');
+        modal.classList.remove('active');
+    }
+}
+
+async function loadVideoJob(jobId) {
+    try {
+        const resp = await fetch(`/api/video/jobs/${jobId}`);
+        const data = await resp.json();
+        if (!resp.ok || !data.job) throw new Error(data.error || '工程不存在');
+
+        currentVideoJobId = jobId;
+        document.getElementById('videoJobCard').classList.remove('hidden');
+        document.getElementById('storyboardCard').classList.remove('hidden');
+        document.getElementById('videoPlayerCard').classList.remove('hidden');
+        renderVideoJob(data.job);
+
+        closeProjectListModal();
+        showToast(`已加载工程: ${data.job.project_name || jobId}`, 'info');
+
+        if (['pending', 'planning', 'generating_assets', 'building_subtitles', 'rendering_video'].includes(data.job.status)) {
+            startVideoPolling(jobId);
+        }
+    } catch (e) {
+        showToast(e.message || '加载工程失败', 'error');
+    }
+}
+
+async function deleteVideoProject(jobId) {
+    if (!confirm('确定要删除此视频工程吗？所有分镜、图片和成片文件将被永久移除。')) return;
+
+    try {
+        const resp = await fetch(`/api/video/jobs/${jobId}`, { method: 'DELETE' });
+        if (!resp.ok) throw new Error('删除失败');
+
+        showToast('工程已成功删除', 'success');
+        if (currentVideoJobId === jobId) {
+            currentVideoJobId = null;
+            document.getElementById('videoJobCard').classList.add('hidden');
+            document.getElementById('storyboardCard').classList.add('hidden');
+            document.getElementById('videoPlayerCard').classList.add('hidden');
+        }
+        await loadProjectCount();
+        openProjectListModal();
+    } catch (e) {
+        showToast(e.message || '删除失败', 'error');
+    }
+}
+
+async function changeCurrentVideoVoice() {
+    if (!currentVideoJobId) {
+        showToast('当前没有视频工程', 'warn');
+        return;
+    }
+    const select = document.getElementById('videoChangeVoiceSelect');
+    const newVoice = select ? select.value : '';
+    if (!newVoice) {
+        showToast('请选择要更换的配音音色', 'warn');
+        return;
+    }
+
+    const btn = document.getElementById('videoChangeVoiceBtn');
+    const origHtml = btn.innerHTML;
+    btn.disabled = true;
+    btn.innerHTML = `<span style="display:inline-block;width:12px;height:12px;border:2px solid #fff;border-top-color:transparent;border-radius:50%;animation:spin 1s linear infinite;margin-right:4px;vertical-align:middle"></span> 更换配音中...`;
+
+    try {
+        const resp = await fetch(`/api/video/jobs/${currentVideoJobId}/change-voice`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ voice: newVoice })
+        });
+        const data = await resp.json();
+        if (!resp.ok || !data.success) {
+            throw new Error(data.error || '更换配音失败');
+        }
+
+        showToast('已启动重新配音与合成（0 生图消耗，保留现有所有画面）', 'success');
+        startVideoPolling(currentVideoJobId);
+    } catch (e) {
+        showToast(e.message || '更换配音失败', 'error');
+    } finally {
+        btn.disabled = false;
+        btn.innerHTML = origHtml;
+    }
+}
+
+async function saveStoryboardEdits() {
+    if (!currentVideoJobId) {
+        showToast('当前没有视频工程', 'warn');
+        return false;
+    }
+    const sceneItems = document.querySelectorAll('.storyboard-scene-item[data-scene-index]');
+    if (!sceneItems.length) {
+        showToast('未找到可编辑的分镜', 'warn');
+        return false;
+    }
+
+    const scenes = [];
+    sceneItems.forEach(item => {
+        const idx = parseInt(item.dataset.sceneIndex, 10);
+        const textarea = item.querySelector('.storyboard-scene-text-edit');
+        const text = textarea ? textarea.value.trim() : '';
+        scenes.push({
+            scene_index: idx,
+            subtitle_text: text,
+            narration_text: text
+        });
+    });
+
+    try {
+        const resp = await fetch(`/api/video/jobs/${currentVideoJobId}/storyboard`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ scenes })
+        });
+        const data = await resp.json();
+        if (!resp.ok || !data.success) throw new Error(data.error || '保存分镜失败');
+        showToast('分镜台词已保存', 'success');
+        return true;
+    } catch (e) {
+        showToast(e.message || '保存分镜台词失败', 'error');
+        return false;
+    }
+}
+
+async function rerenderVideoFromStoryboard() {
+    if (!currentVideoJobId) {
+        showToast('当前没有视频工程', 'warn');
+        return;
+    }
+    const saved = await saveStoryboardEdits();
+    if (!saved) return;
+
+    try {
+        const resp = await fetch(`/api/video/jobs/${currentVideoJobId}/rerender`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' }
+        });
+        const data = await resp.json();
+        if (!resp.ok || !data.success) throw new Error(data.error || '重新渲染失败');
+        showToast('已开始重新合成视频...', 'success');
+        startVideoPolling(currentVideoJobId);
+    } catch (e) {
+        showToast(e.message || '重新渲染失败', 'error');
     }
 }
